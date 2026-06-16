@@ -84,7 +84,14 @@ def select_state(states, wanted_label):
 
 def lonlat_deg(xyz):
     lon, lat, _, _ = xyz_to_lon_lat(xyz)
-    return np.rad2deg(lon), np.rad2deg(lat)
+    lon_deg = np.rad2deg(lon)
+    lat_deg = np.rad2deg(lat)
+
+    # Some mesh utilities return lon in [0, 360).  Wrap to [-180, 180)
+    # so global plots are not clipped by xlim=(-180, 180).
+    lon_deg = ((lon_deg + 180.0) % 360.0) - 180.0
+
+    return lon_deg, lat_deg
 
 
 def scatter_panel(ax, lon, lat, values, title, vmin=None, vmax=None, cmap=None, point_size=0.6):
