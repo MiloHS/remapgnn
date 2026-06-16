@@ -89,12 +89,12 @@ def add_mesh_condition_columns(df):
     return df
 
 
-def load_edge_dataframe(path):
-    df = pd.read_parquet(path)
+def load_edge_dataframe(path, columns=None):
+    df = pd.read_parquet(path, columns=columns)
     return add_mesh_condition_columns(df)
 
 def edge_schema(cfg, pair: str) -> pd.DataFrame:
-    df = load_edge_dataframe(cfg, pair)
+    df = load_edge_dataframe(cfg.edge_path(pair))
     rows = []
     for col in df.columns:
         rows.append(
@@ -198,7 +198,7 @@ def print_pair_data_summary(cfg, pair: str) -> None:
     print(f"tgt fields:  {tgt_file}")
     print()
 
-    df = load_edge_dataframe(cfg, pair, columns=[INDEX_SRC_COL, INDEX_TGT_COL])
+    df = load_edge_dataframe(cfg.edge_path(pair), columns=[INDEX_SRC_COL, INDEX_TGT_COL])
     n_src, n_tgt = infer_node_counts(df)
 
     print(f"edges:       {len(df):,}")

@@ -1,0 +1,8 @@
+numpy
+pandas
+pyarrow
+torch
+xarray
+netCDF4
+scipy
+matplotlib
