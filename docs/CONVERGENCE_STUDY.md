@@ -4,7 +4,7 @@ This experiment checks whether the learned conservative remapper behaves like a 
 
 ## Setup
 
-We use a four-level uniformly refined CS to ICOD sequence:
+We use a four-level CS to ICOD refinement:
 
 | Level | Pair |
 |---:|---|
@@ -15,11 +15,11 @@ We use a four-level uniformly refined CS to ICOD sequence:
 
 For each level, analytic fields are evaluated on the source mesh, remapped to the target mesh, and compared against analytic target values using area-weighted relative L2 error.
 
-The mesh-size proxy is:
+We use the following mesh size proxy:
 
 `h = max(sqrt(mean source cell area), sqrt(mean target cell area))`
 
-Observed convergence order is estimated by fitting a line to `log(error)` versus `log(h)` across all four levels.
+We estimate the convergence order by fitting a line to `log(error)` versus `log(h)` across all four levels.
 
 ## Analytic fields
 
@@ -40,14 +40,6 @@ The smooth analytic test suite is:
 | v18 corrected `lmax=8` | 1.504 | 1.412 | 1.637 | 0.9530 |
 | v18 corrected `lmax=16` | 1.472 | 1.375 | 1.591 | 0.9530 |
 | v18 corrected `lmax=24` | 1.412 | 1.320 | 1.538 | 0.9574 |
-
-## Interpretation
-
-Tempest shows nearly exact first-order convergence, as expected for the first-order conservative map.
-
-The learned GNN/Sinkhorn remapper also shows clear first-order-or-better aggregate convergence across all tested smooth fields. Its interval-wise slopes are less uniform than Tempest, but the fitted four-level slopes are consistently above one.
-
-One interesting result is that the earlier correction stages, especially `lmax=8`, have the strongest analytic convergence behavior on this diagnostic. The final `lmax=24` correction remains convergent but is not always the lowest-error stage for smooth analytic fields. This suggests that the final correction is more specialized toward the original Tempest/spectral objective, while earlier correction stages preserve smoother analytic convergence behavior slightly better.
 
 ## Figures
 
