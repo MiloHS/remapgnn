@@ -70,7 +70,7 @@ We also ran the same four-level diagnostic in the reverse direction:
 | 3 | `ICOD-r64_to_CS-r64` |
 | 4 | `ICOD-r128_to_CS-r128` |
 
-The reverse direction is more challenging for the learned model.
+The model struggled a little more.
 
 | Method / stage | Mean fitted order | Min | Max | Mean R² |
 |---|---:|---:|---:|---:|
@@ -80,9 +80,7 @@ The reverse direction is more challenging for the learned model.
 | v18 corrected `lmax=16` | 0.882 | 0.776 | 1.010 | 0.9634 |
 | v18 corrected `lmax=24` | 0.844 | 0.709 | 1.009 | 0.9686 |
 
-This indicates directional asymmetry. Tempest shows robust first-order convergence in both CS→ICOD and ICOD→CS. The learned conservative remapper shows first-order-or-better aggregate convergence for CS→ICOD, but sub-first-order aggregate convergence for ICOD→CS.
-
-In the reverse direction, `lmax=16` gives the strongest average learned fitted order. The final `lmax=24` correction remains competitive but is not the best analytic-convergence stage.
+The learned conservative remapper shows first-order-or-better aggregate convergence for CS→ICOD, but sub-first-order aggregate convergence for ICOD→CS.
 
 ![ICOD to CS four-level analytic convergence](../analysis_medium_improv/github_results/convergence_ICOD_to_CS_4level_loglog.png)
 
