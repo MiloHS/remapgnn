@@ -1,0 +1,71 @@
+{
+  "run_name": "v10_hybridattn_balanced_long_a2p0_mink8",
+  "model_tag": "bipartite_gnn_sinkhorn_v10_hybridattn_balanced_long_kdist_a2p0_mink8",
+  "architecture": "hybrid_attention",
+  "graph": {
+    "kind": "distance_cutoff",
+    "alpha": 2.0,
+    "min_k": 8,
+    "suffix": "kdist_a2p0_mink8",
+    "K": "dist_a2p0_mink8"
+  },
+  "paths": {
+    "analysis_dir": "analysis_medium_improv",
+    "maps_dir": "maps_medium_improv",
+    "models_dir": "models_medium_improv",
+    "mira_dir": "data/MIRA-Datasets",
+    "eval_template": "scripts/evaluate_bipartite_gnn_sinkhorn_v10_hybridattn_kdist_a2p0_mink8.py"
+  },
+  "pairs": [
+    "RLL-r90-180_to_CS-r16",
+    "RLL-r90-180_to_ICOD-r16",
+    "CS-r32_to_RLL-r90-180",
+    "ICOD-r32_to_RLL-r90-180",
+    "CS-r32_to_ICOD-r32",
+    "ICOD-r32_to_CS-r32"
+  ],
+  "training": {
+    "train_pairs": [
+      "RLL-r90-180_to_ICOD-r16",
+      "RLL-r90-180_to_CS-r32",
+      "RLL-r30-60_to_CS-r16",
+      "RLL-r30-60_to_ICOD-r16",
+      "CS-r32_to_RLL-r90-180",
+      "ICOD-r32_to_RLL-r90-180",
+      "CS-r32_to_ICOD-r32",
+      "ICOD-r32_to_CS-r32"
+    ],
+    "val_pair": "RLL-r90-180_to_ICOD-r16",
+    "test_pair": "RLL-r90-180_to_CS-r16",
+    "hidden": 128,
+    "epochs": 200,
+    "balance_iters": 2000,
+    "decoder_chunk_size": 10000,
+    "seed": 0,
+    "lr": 0.0002,
+    "weight_decay": 1e-05,
+    "sinkhorn_iters_train": 30,
+    "sinkhorn_iters_eval": 300,
+    "stat_sample_per_pair": 80000,
+    "lambda_pos_s": 1.0,
+    "lambda_neg_s": 0.05,
+    "lambda_bce": 0.05,
+    "checkpoint_pairs": [
+      "RLL-r90-180_to_ICOD-r16",
+      "RLL-r90-180_to_CS-r16",
+      "CS-r32_to_RLL-r90-180",
+      "ICOD-r32_to_CS-r32"
+    ],
+    "checkpoint_score": {
+      "metric": "mean_rel_l2_positive_edges",
+      "row_weight": 0.05
+    }
+  },
+  "fields": [
+    "AnalyticalFun1",
+    "AnalyticalFun2",
+    "TotalPrecipWater",
+    "CloudFraction",
+    "Topography"
+  ]
+}

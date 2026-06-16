@@ -1,0 +1,116 @@
+{
+  "run_name": "v18_irno_corrector_from_v16_l24_seed456_a2p0_mink8",
+  "model_tag": "bipartite_gnn_sinkhorn_v18_irno_corrector_from_v16_l24_seed456_kdist_a2p0_mink8",
+  "architecture": "irno_corrector",
+  "graph": {
+    "kind": "distance_cutoff",
+    "alpha": 2.0,
+    "min_k": 8,
+    "suffix": "kdist_a2p0_mink8",
+    "K": "dist_a2p0_mink8"
+  },
+  "paths": {
+    "analysis_dir": "analysis_medium_improv",
+    "maps_dir": "maps_medium_improv",
+    "models_dir": "models_medium_improv",
+    "mira_dir": "data/MIRA-Datasets",
+    "eval_template": "scripts/evaluate_bipartite_gnn_sinkhorn_v10_hybridattn_kdist_a2p0_mink8.py"
+  },
+  "pairs": [
+    "RLL-r90-180_to_CS-r16",
+    "RLL-r90-180_to_ICOD-r16",
+    "CS-r32_to_RLL-r90-180",
+    "ICOD-r32_to_RLL-r90-180",
+    "CS-r32_to_ICOD-r32",
+    "ICOD-r32_to_CS-r32"
+  ],
+  "training": {
+    "train_pairs": [
+      "RLL-r90-180_to_ICOD-r16",
+      "RLL-r90-180_to_CS-r32",
+      "RLL-r30-60_to_CS-r16",
+      "RLL-r30-60_to_ICOD-r16",
+      "CS-r32_to_RLL-r90-180",
+      "ICOD-r32_to_RLL-r90-180",
+      "CS-r32_to_ICOD-r32",
+      "ICOD-r32_to_CS-r32"
+    ],
+    "val_pair": "RLL-r90-180_to_ICOD-r16",
+    "test_pair": "RLL-r90-180_to_CS-r16",
+    "hidden": 128,
+    "epochs": 80,
+    "balance_iters": 2000,
+    "decoder_chunk_size": 10000,
+    "seed": 456,
+    "lr": 0.0002,
+    "weight_decay": 1e-05,
+    "sinkhorn_iters_train": 30,
+    "sinkhorn_iters_eval": 300,
+    "stat_sample_per_pair": 80000,
+    "lambda_pos_s": 1.0,
+    "lambda_neg_s": 0.05,
+    "lambda_bce": 0.05,
+    "checkpoint_pairs": [
+      "RLL-r90-180_to_ICOD-r16",
+      "RLL-r90-180_to_CS-r16",
+      "CS-r32_to_RLL-r90-180",
+      "ICOD-r32_to_CS-r32"
+    ],
+    "checkpoint_score": {
+      "metric": "mean_rel_l2_positive_edges",
+      "row_weight": 0.05
+    },
+    "harmonic_loss": {
+      "enabled": true,
+      "degrees": [
+        0,
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24
+      ],
+      "modes_per_degree": 5,
+      "lambda_field": 0.05,
+      "max_fields_per_step": 8,
+      "checkpoint_field_weight": 0.15
+    }
+  },
+  "fields": [
+    "AnalyticalFun1",
+    "AnalyticalFun2",
+    "TotalPrecipWater",
+    "CloudFraction",
+    "Topography"
+  ],
+  "irno_corrector": {
+    "base_config": "configs/v16_gated_hybridattn_balanced_long_harmonic_l24_a2p0_mink8.json",
+    "base_model_path": "models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt",
+    "corrector_architecture": "gated_hybrid_attention",
+    "hidden": 128,
+    "decoder_chunk_size": 10000,
+    "bands": [
+      8,
+      16,
+      24
+    ],
+    "alpha": 0.2,
+    "lmax_denominator": 32.0,
+    "modes_per_degree": 5,
+    "max_fields_per_step": 8,
+    "lambda_operator": 1.0,
+    "lambda_step_operator": 0.15,
+    "lambda_field": 0.05,
+    "lambda_keep": 0.01,
+    "lambda_delta": 0.0001,
+    "lambda_neg_s": 0.05,
+    "checkpoint_field_weight": 0.15,
+    "row_weight": 0.05,
+    "sinkhorn_iters_train": 30,
+    "sinkhorn_iters_eval": 300,
+    "lr": 0.0002,
+    "weight_decay": 1e-05
+  }
+}

@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+import torch
+
+
+INDEX_SRC_COL = "source_index"
+INDEX_TGT_COL = "target_index"
+
+
+@dataclass(frozen=True)
+class PairInfo:
+    pair: str
+    src: str
+    tgt: str
+    src_mesh: str
+    tgt_mesh: str
+
+
+def split_pair(pair: str) -> PairInfo:
+    src, tgt = pair.split("_to_")
+    return PairInfo(
+        pair=pair,
+        src=src,
+        tgt=tgt,
+        src_mesh=src.split("-")[0],
+        tgt_mesh=tgt.split("-")[0],
+    )
+
+
+def edge_path(cfg, pair: str) -> Path:
+    return cfg.edge_path(pair)
+
+
+def map_path(cfg, pair: str) -> Path:
+    return cfg.map_path(pair)
+
+
+def field_paths(cfg, pair: str) -> tuple[Path, Path]:
+    return cfg.source_target_files(pair)
+
+
+
+def _mesh_family_name(x) -> str:
+    x = str(x).upper()
+    if "RLL" in x:
+        return "RLL"
+    if "ICOD" in x:
+        return "ICOD"
+    if "CS" in x:
+        return "CS"
+    return "OTHER"
+
+
+def add_mesh_condition_columns(df):
+    """
+    Add numeric mesh-family conditioning columns.
+
+    These are constant across each pair but useful as global conditioning signals:
+      src_mesh_is_RLL, src_mesh_is_CS, src_mesh_is_ICOD
+      tgt_mesh_is_RLL, tgt_mesh_is_CS, tgt_mesh_is_ICOD
+    """
+    df = df.copy()
+
+    if "src_mesh" in df.columns:
+        src_family = df["src_mesh"].map(_mesh_family_name)
+    elif "pair" in df.columns:
+        src_family = df["pair"].astype(str).str.split("_to_").str[0].map(_mesh_family_name)
+    else:
+        src_family = None
+
+    if "tgt_mesh" in df.columns:
+        tgt_family = df["tgt_mesh"].map(_mesh_family_name)
+    elif "pair" in df.columns:
+        tgt_family = df["pair"].astype(str).str.split("_to_").str[1].map(_mesh_family_name)
+    else:
+        tgt_family = None
+
+    for fam in ["RLL", "CS", "ICOD"]:
+        if src_family is not None:
+            df[f"src_mesh_is_{fam}"] = (src_family == fam).astype("float32")
+        if tgt_family is not None:
+            df[f"tgt_mesh_is_{fam}"] = (tgt_family == fam).astype("float32")
+
+    return df
+
+
+def load_edge_dataframe(path):
+    df = pd.read_parquet(path)
+    return add_mesh_condition_columns(df)
+
+def edge_schema(cfg, pair: str) -> pd.DataFrame:
+    df = load_edge_dataframe(cfg, pair)
+    rows = []
+    for col in df.columns:
+        rows.append(
+            {
+                "column": col,
+                "dtype": str(df[col].dtype),
+                "non_null": int(df[col].notna().sum()),
+                "n_unique": int(df[col].nunique(dropna=True)) if len(df) <= 500000 else None,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def validate_edge_dataframe(df: pd.DataFrame) -> None:
+    missing = [c for c in [INDEX_SRC_COL, INDEX_TGT_COL] if c not in df.columns]
+    if missing:
+        raise ValueError(f"missing required edge columns: {missing}")
+
+
+def edge_indices(
+    df: pd.DataFrame,
+    device: torch.device | str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    validate_edge_dataframe(df)
+    src_index = torch.as_tensor(df[INDEX_SRC_COL].to_numpy().copy(), dtype=torch.long, device=device)
+    tgt_index = torch.as_tensor(df[INDEX_TGT_COL].to_numpy().copy(), dtype=torch.long, device=device)
+    return src_index, tgt_index
+
+
+def infer_node_counts(df: pd.DataFrame) -> tuple[int, int]:
+    validate_edge_dataframe(df)
+    n_src = int(df[INDEX_SRC_COL].max()) + 1
+    n_tgt = int(df[INDEX_TGT_COL].max()) + 1
+    return n_src, n_tgt
+
+
+def numeric_columns(df: pd.DataFrame) -> list[str]:
+    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+
+def likely_feature_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Conservative feature-column guess.
+
+    This is intentionally broad for inspection. Later, train_config.py
+    should use explicit feature lists from the config or the existing
+    training script's conventions.
+    """
+    exclude_exact = {
+        INDEX_SRC_COL,
+        INDEX_TGT_COL,
+        "edge_exists",
+        "exists",
+        "S_true",
+        "M_true",
+        "weight",
+        "true_weight",
+        "area_src",
+        "area_tgt",
+        "src_area",
+        "tgt_area",
+    }
+
+    cols = []
+    for c in numeric_columns(df):
+        if c in exclude_exact:
+            continue
+        if c.startswith("area_"):
+            continue
+        cols.append(c)
+    return cols
+
+
+def tensor_from_columns(
+    df: pd.DataFrame,
+    columns: list[str],
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    if not columns:
+        raise ValueError("no columns provided")
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"missing columns: {missing}")
+    return torch.as_tensor(df[columns].to_numpy().copy(), dtype=dtype, device=device)
+
+
+def print_pair_data_summary(cfg, pair: str) -> None:
+    info = split_pair(pair)
+    epath = cfg.edge_path(pair)
+    mpath = cfg.map_path(pair)
+    src_file, tgt_file = cfg.source_target_files(pair)
+
+    print("=" * 100)
+    print(f"pair:        {pair}")
+    print(f"src:         {info.src} ({info.src_mesh})")
+    print(f"tgt:         {info.tgt} ({info.tgt_mesh})")
+    print(f"edge path:   {epath}")
+    print(f"map path:    {mpath}")
+    print(f"src fields:  {src_file}")
+    print(f"tgt fields:  {tgt_file}")
+    print()
+
+    df = load_edge_dataframe(cfg, pair, columns=[INDEX_SRC_COL, INDEX_TGT_COL])
+    n_src, n_tgt = infer_node_counts(df)
+
+    print(f"edges:       {len(df):,}")
+    print(f"n_src infer: {n_src:,}")
+    print(f"n_tgt infer: {n_tgt:,}")
+    print(f"edge exists: {epath.exists()}")
+    print(f"map exists:  {mpath.exists()}")
+    print(f"src exists:  {src_file.exists()}")
+    print(f"tgt exists:  {tgt_file.exists()}")
+
+# ---------------------------------------------------------------------
+# Training/evaluation tensor construction
+# ---------------------------------------------------------------------
+
+DEFAULT_EDGE_FEATURES = [
+    "dx", "dy", "dz",
+    "chord_dist",
+    "area_ratio_tgt_over_src",
+    "knn_rank",
+]
+
+DEFAULT_SRC_NODE_FEATURES = [
+    "src_x", "src_y", "src_z",
+    "src_area",
+]
+
+DEFAULT_TGT_NODE_FEATURES = [
+    "tgt_x", "tgt_y", "tgt_z",
+    "tgt_area",
+]
+
+
+def get_feature_lists(cfg) -> tuple[list[str], list[str], list[str]]:
+    """
+    Return edge/source-node/target-node features.
+
+    Defaults match the current v10 training script. Config can override later.
+    """
+    features = cfg.raw.get("features", {})
+    edge_features = list(features.get("edge", DEFAULT_EDGE_FEATURES))
+    src_node_features = list(features.get("src_node", DEFAULT_SRC_NODE_FEATURES))
+    tgt_node_features = list(features.get("tgt_node", DEFAULT_TGT_NODE_FEATURES))
+    return edge_features, src_node_features, tgt_node_features
+
+
+def compute_feature_stats(
+    cfg,
+    pairs: list[str],
+    sample_per_pair: int = 80000,
+    seed: int = 123,
+) -> dict:
+    """
+    Compute global normalization stats exactly like the current training scripts.
+    """
+    import numpy as np
+
+    edge_features, src_node_features, tgt_node_features = get_feature_lists(cfg)
+
+    print("Computing global feature normalization stats from samples...")
+
+    edge_chunks = []
+    src_chunks = []
+    tgt_chunks = []
+
+    for pair in pairs:
+        p = cfg.edge_path(pair)
+        print(f"  reading sample: {p}")
+
+        cols = list(set(edge_features + src_node_features + tgt_node_features))
+        # Some configured features, such as src_mesh_is_RLL, are synthetic
+        # conditioning columns. They are not stored in parquet, so read the
+        # physical columns needed to create them, then add them after loading.
+        mesh_condition_cols = {
+            "src_mesh_is_RLL", "src_mesh_is_CS", "src_mesh_is_ICOD",
+            "tgt_mesh_is_RLL", "tgt_mesh_is_CS", "tgt_mesh_is_ICOD",
+        }
+        physical_cols = [c for c in cols if c not in mesh_condition_cols]
+        for raw_col in ["src_mesh", "tgt_mesh", "pair"]:
+            if raw_col not in physical_cols:
+                physical_cols.append(raw_col)
+
+        df = pd.read_parquet(p, columns=physical_cols)
+        df = add_mesh_condition_columns(df)
+
+        if len(df) > sample_per_pair:
+            df = df.sample(sample_per_pair, random_state=seed)
+
+        edge_chunks.append(df[edge_features].to_numpy(dtype="float32").copy())
+        src_chunks.append(df[src_node_features].to_numpy(dtype="float32").copy())
+        tgt_chunks.append(df[tgt_node_features].to_numpy(dtype="float32").copy())
+
+    edge_X = np.concatenate(edge_chunks, axis=0)
+    src_X = np.concatenate(src_chunks, axis=0)
+    tgt_X = np.concatenate(tgt_chunks, axis=0)
+
+    stats = {
+        "edge_mean": edge_X.mean(axis=0, keepdims=True).astype("float32"),
+        "edge_std": (edge_X.std(axis=0, keepdims=True) + 1.0e-12).astype("float32"),
+        "src_mean": src_X.mean(axis=0, keepdims=True).astype("float32"),
+        "src_std": (src_X.std(axis=0, keepdims=True) + 1.0e-12).astype("float32"),
+        "tgt_mean": tgt_X.mean(axis=0, keepdims=True).astype("float32"),
+        "tgt_std": (tgt_X.std(axis=0, keepdims=True) + 1.0e-12).astype("float32"),
+    }
+
+    print("Feature stats ready.")
+    return stats
+
+
+def unique_node_features(
+    df: pd.DataFrame,
+    index_col: str,
+    feature_cols: list[str],
+    n_nodes: int,
+):
+    """
+    Build one feature row per node from an edge dataframe.
+
+    This matches the current training script behavior:
+      out[idx] = vals
+    """
+    import numpy as np
+
+    out = np.zeros((n_nodes, len(feature_cols)), dtype=np.float32)
+    idx = df[index_col].to_numpy(dtype="int64").copy()
+    vals = df[feature_cols].to_numpy(dtype="float32").copy()
+    out[idx] = vals
+    return out
+
+
+def load_pair_tensors(
+    cfg,
+    pair: str,
+    stats: dict,
+    device: torch.device | str,
+) -> dict:
+    """
+    Load one mesh-pair edge dataset and return the training/eval tensors.
+
+    This mirrors load_pair_tensors() from the v10 training script.
+    """
+    import numpy as np
+
+    edge_features, src_node_features, tgt_node_features = get_feature_lists(cfg)
+
+    p = cfg.edge_path(pair)
+    df = pd.read_parquet(p)
+    df = add_mesh_condition_columns(df)
+
+    src_index_np = df["source_index"].to_numpy(dtype="int64").copy()
+    tgt_index_np = df["target_index"].to_numpy(dtype="int64").copy()
+
+    n_src = int(src_index_np.max()) + 1
+    n_tgt = int(tgt_index_np.max()) + 1
+
+    edge_np = df[edge_features].to_numpy(dtype="float32").copy()
+    edge_np = (edge_np - stats["edge_mean"]) / stats["edge_std"]
+
+    src_node_np = unique_node_features(df, "source_index", src_node_features, n_src)
+    tgt_node_np = unique_node_features(df, "target_index", tgt_node_features, n_tgt)
+
+    src_node_np = (src_node_np - stats["src_mean"]) / stats["src_std"]
+    tgt_node_np = (tgt_node_np - stats["tgt_mean"]) / stats["tgt_std"]
+
+    edge_exists_np = df["edge_exists"].to_numpy(dtype="float32").copy()
+    S_true_np = df["weight"].to_numpy(dtype="float32").copy()
+
+    area_src_np = np.zeros(n_src, dtype=np.float32)
+    area_tgt_np = np.zeros(n_tgt, dtype=np.float32)
+    area_src_np[src_index_np] = df["src_area"].to_numpy(dtype="float32").copy()
+    area_tgt_np[tgt_index_np] = df["tgt_area"].to_numpy(dtype="float32").copy()
+
+    return {
+        "pair": pair,
+        "edge_attr": torch.tensor(edge_np, dtype=torch.float32, device=device),
+        "src_node_attr": torch.tensor(src_node_np, dtype=torch.float32, device=device),
+        "tgt_node_attr": torch.tensor(tgt_node_np, dtype=torch.float32, device=device),
+        "src_index": torch.tensor(src_index_np, dtype=torch.long, device=device),
+        "tgt_index": torch.tensor(tgt_index_np, dtype=torch.long, device=device),
+        "edge_exists": torch.tensor(edge_exists_np, dtype=torch.float32, device=device),
+        "S_true": torch.tensor(S_true_np, dtype=torch.float32, device=device),
+        "area_src": torch.tensor(area_src_np, dtype=torch.float32, device=device),
+        "area_tgt": torch.tensor(area_tgt_np, dtype=torch.float32, device=device),
+        "n_src": n_src,
+        "n_tgt": n_tgt,
+        "n_edges": len(df),
+        "n_pos": float(edge_exists_np.sum()),
+    }

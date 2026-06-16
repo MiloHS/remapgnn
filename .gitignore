@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Environments
+.venv/
+env/
+*.egg-info/
+
+# Large/generated data
+data/
+maps/
+maps_improv/
+maps_medium_improv/
+models_medium_improv/
+logs/
+logs_improv/
+logs_medium_improv/
+software/
+.generated/
+jobs/
+
+*.pt
+*.pth
+*.ckpt
+*.nc
+*.parquet
+*.out
+*.pbs
+*.o[0-9]*
+0.5
+
+# Ignore generated analysis outputs by default
+analysis_medium_improv/*
+
+# Keep only curated public results
+!analysis_medium_improv/github_results/
+!analysis_medium_improv/github_results/**
