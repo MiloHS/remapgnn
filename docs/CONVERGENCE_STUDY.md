@@ -85,3 +85,30 @@ The learned conservative remapper shows first-order-or-better aggregate converge
 ![ICOD to CS four-level analytic convergence](../analysis_medium_improv/github_results/convergence_ICOD_to_CS_4level_loglog.png)
 
 ![ICOD to CS fitted convergence orders](../analysis_medium_improv/github_results/convergence_ICOD_to_CS_4level_fitted_orders.png)
+
+## Analytic test field profiles
+
+The convergence test fields `smooth1` and `smooth2` are synthetic analytic functions, not MIRA physical fields. They are evaluated directly from the spherical mesh coordinates.
+
+For unit-sphere Cartesian coordinates `(x, y, z)` with longitude `lon` and latitude `lat`:
+
+- `smooth1 = 1 + 0.25x - 0.15y + 0.10z + 0.20 sin(2 lon) cos(lat)`
+- `smooth2 = exp(0.5x - 0.25y) + 0.10 cos(3 lon) cos^2(lat)`
+
+These fields were chosen to be smooth, nontrivial, and independent of the MIRA training/evaluation variables.
+
+### smooth1
+
+![smooth1 global field](../analysis_medium_improv/github_results/smooth1_global.png)
+
+![smooth1 longitude profiles](../analysis_medium_improv/github_results/smooth1_longitude_profiles.png)
+
+![smooth1 latitude profiles](../analysis_medium_improv/github_results/smooth1_latitude_profiles.png)
+
+### smooth2
+
+![smooth2 global field](../analysis_medium_improv/github_results/smooth2_global.png)
+
+![smooth2 longitude profiles](../analysis_medium_improv/github_results/smooth2_longitude_profiles.png)
+
+![smooth2 latitude profiles](../analysis_medium_improv/github_results/smooth2_latitude_profiles.png)
