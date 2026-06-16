@@ -58,3 +58,32 @@ Key files:
 - `convergence_CS_to_ICOD_4level_v18_trajectory_smooth.csv`
 - `convergence_CS_to_ICOD_4level_v18_trajectory_smooth_slopes.csv`
 - `convergence_CS_to_ICOD_4level_stage_summary.csv`
+
+## Reverse direction: ICOD to CS
+
+We also ran the same four-level diagnostic in the reverse direction:
+
+| Level | Pair |
+|---:|---|
+| 1 | `ICOD-r16_to_CS-r16` |
+| 2 | `ICOD-r32_to_CS-r32` |
+| 3 | `ICOD-r64_to_CS-r64` |
+| 4 | `ICOD-r128_to_CS-r128` |
+
+The reverse direction is more challenging for the learned model.
+
+| Method / stage | Mean fitted order | Min | Max | Mean R² |
+|---|---:|---:|---:|---:|
+| Tempest | 1.083 | 1.032 | 1.179 | 0.9989 |
+| v16 base | 0.806 | 0.662 | 0.925 | 0.9180 |
+| v18 corrected `lmax=8` | 0.866 | 0.748 | 0.975 | 0.9445 |
+| v18 corrected `lmax=16` | 0.882 | 0.776 | 1.010 | 0.9634 |
+| v18 corrected `lmax=24` | 0.844 | 0.709 | 1.009 | 0.9686 |
+
+This indicates directional asymmetry. Tempest shows robust first-order convergence in both CS→ICOD and ICOD→CS. The learned conservative remapper shows first-order-or-better aggregate convergence for CS→ICOD, but sub-first-order aggregate convergence for ICOD→CS.
+
+In the reverse direction, `lmax=16` gives the strongest average learned fitted order. The final `lmax=24` correction remains competitive but is not the best analytic-convergence stage.
+
+![ICOD to CS four-level analytic convergence](../analysis_medium_improv/github_results/convergence_ICOD_to_CS_4level_loglog.png)
+
+![ICOD to CS fitted convergence orders](../analysis_medium_improv/github_results/convergence_ICOD_to_CS_4level_fitted_orders.png)
