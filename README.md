@@ -36,7 +36,7 @@ Across six mesh pairs, v18 reduced average field relative L2 error versus Tempes
 - `scripts/` — training and evaluation scripts
 - `configs/` — experiment configurations
 - `docs/` — experiment notes, model lineage, and result summaries
-- `analysis_medium_improv/` — selected result CSVs and figures
+- `analysis_medium_improv/github_results/` — curated result CSVs and figures
 
 Large raw datasets, generated maps, edge parquet files, and model checkpoints are intentionally excluded from normal Git tracking.
 
