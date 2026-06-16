@@ -112,3 +112,19 @@ These fields were chosen to be smooth, nontrivial, and independent of the MIRA t
 ![smooth2 longitude profiles](../analysis_medium_improv/github_results/smooth2_longitude_profiles.png)
 
 ![smooth2 latitude profiles](../analysis_medium_improv/github_results/smooth2_latitude_profiles.png)
+
+## Finest-grid solution and error visualizations
+
+The following figures show the finest-grid analytic solution and remapping errors for the final `lmax=24` v18 stage. Each figure includes the source analytic field, target analytic truth, learned prediction, Tempest prediction, Tempest error, and learned error.
+
+### CS to ICOD, finest grid
+
+![CS to ICOD smooth1 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_CS-r128_to_ICOD-r128_smooth1_corrected_lmax24_solution_errors.png)
+
+![CS to ICOD smooth2 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_CS-r128_to_ICOD-r128_smooth2_corrected_lmax24_solution_errors.png)
+
+### ICOD to CS, finest grid
+
+![ICOD to CS smooth1 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_ICOD-r128_to_CS-r128_smooth1_corrected_lmax24_solution_errors.png)
+
+![ICOD to CS smooth2 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_ICOD-r128_to_CS-r128_smooth2_corrected_lmax24_solution_errors.png)
