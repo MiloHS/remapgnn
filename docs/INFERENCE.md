@@ -99,8 +99,6 @@ This writes:
 
     analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet
 
-The `--normalize-area-sums` option is useful when source and target meshes have slightly different total area normalizations.
-
 ## 7. Run learned remapping inference
 
 Apply the trained model to a source field.
