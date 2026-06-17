@@ -76,3 +76,45 @@ This script assumes that the edge dataset for the requested pair already exists 
     analysis_medium_improv/edge_dataset_CS-r32_to_ICOD-r32_kdist_a2p0_mink8.parquet
 
 The script writes a target-field NetCDF file and can optionally write the learned sparse operator as a compressed NumPy archive.
+
+## External mesh-pair workflow
+
+For a new spherical finite-volume source-target mesh pair, first build a geometry-only candidate graph:
+
+    python scripts/build_external_kdist_graph.py \
+      --src-mesh path/to/source_mesh.nc \
+      --tgt-mesh path/to/target_mesh.nc \
+      --src-name MY-SOURCE \
+      --tgt-name MY-TARGET \
+      --out analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+      --alpha 2.0 \
+      --min-k 8 \
+      --max-k 256
+
+Then run inference on a source field:
+
+    python scripts/infer_prepared_pair.py \
+      --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
+      --pair MY-SOURCE_to_MY-TARGET \
+      --edge-parquet analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+      --src-field-nc path/to/source_field.nc \
+      --target-mesh-nc path/to/target_mesh.nc \
+      --field FIELD_NAME \
+      --stage lmax24 \
+      --balance-iters 2000 \
+      --out remapped_FIELD_NAME.nc \
+      --out-map learned_operator.npz
+
+Optional visualization and summary utilities:
+
+    python scripts/visualize_remap_output.py \
+      --pred-nc remapped_FIELD_NAME.nc \
+      --field FIELD_NAME \
+      --target-mesh-nc path/to/target_mesh.nc \
+      --out remapped_FIELD_NAME.png
+
+    python scripts/summarize_remap_output.py \
+      --pred-nc remapped_FIELD_NAME.nc \
+      --field FIELD_NAME \
+      --target-mesh-nc path/to/target_mesh.nc \
+      --out-csv remapped_FIELD_NAME_summary.csv
