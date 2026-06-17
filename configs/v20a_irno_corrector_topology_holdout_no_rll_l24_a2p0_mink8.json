@@ -74,7 +74,7 @@
   ],
   "irno_corrector": {
     "base_config": "configs/v16_gated_hybridattn_balanced_long_harmonic_l24_a2p0_mink8.json",
-    "base_model_path": "models_medium_improv/bipartite_gnn_sinkhorn_v20a_base_topology_holdout_no_rll_l24_a2p0_mink8.pt",
+    "base_model_path": "models_medium_improv/bipartite_gnn_sinkhorn_v20a_base_topology_holdout_no_rll_l24_kdist_a2p0_mink8.pt",
     "corrector_architecture": "gated_hybrid_attention",
     "hidden": 128,
     "decoder_chunk_size": 10000,
