@@ -11,60 +11,73 @@ v20a was trained only on CS↔ICOD pairs:
 
 All RLL pairs were removed from training, validation, testing, and checkpoint scoring.
 
-The trained v20a pipeline has:
+The v20a model has:
 
-- v20a base GNN/Sinkhorn remapper
-- v20a IRNO-style corrector
+- a topology-holdout base GNN/Sinkhorn remapper
+- an IRNO-style corrector
 - correction stages at `lmax=8`, `lmax=16`, and `lmax=24`
 
 ## Main result
 
-v20a does not transfer to RLL as well as v18.
+v20a shows partial zero-shot transfer but is not competitive overall.
 
-This indicates that v18's strong RLL behavior depended at least partly on RLL exposure during training, rather than being purely zero-shot topology generalization.
+The most important result is not just fitted order. We report both:
 
-## Stage-level summary
+1. finest-grid actual relative L2 error,
+2. finest-grid error ratio versus Tempest,
+3. fitted convergence order,
+4. behavior across correction stages.
 
-The base stage is usually the strongest v20a stage. The learned corrector often worsens extrapolation, especially at higher correction stages.
+## Actual-error summary
 
-Summary from `analysis_medium_improv/github_results/v20a_convergence_stage_summary.csv`:
+From `analysis_medium_improv/github_results/v20a_actual_error_stage_summary.csv`:
 
 - CS→ICOD:
-  - Tempest mean order: about 1.01
-  - v20a base mean order: about 1.14
-  - v20a lmax24 mean order: about 1.00, but with larger finest errors than Tempest
-
-- ICOD→CS:
-  - Tempest mean order: about 1.08
-  - v20a base mean order: about 0.62
-  - v20a lmax24 mean order: about 0.45
+  - v20a base mean finest-grid error ratio: about 1.72× Tempest
+  - v20a base mean fitted order: about 1.14
+  - Interpretation: decent refinement trend, but worse actual errors than Tempest.
 
 - CS→RLL:
-  - Tempest mean order: about 1.02
-  - v20a base mean order: about 0.76
-  - v20a lmax24 mean order: about 0.65
+  - v20a base mean finest-grid error ratio: about 1.30× Tempest
+  - v20a base mean fitted order: about 0.76
+  - Interpretation: partial zero-shot transfer. Coordinate-like fields are sometimes competitive, but smooth nonlinear fields are worse.
+
+- ICOD→CS:
+  - v20a base mean finest-grid error ratio: about 4.51× Tempest
+  - v20a base mean fitted order: about 0.62
+  - Interpretation: clear failure relative to Tempest, especially on smooth fields.
 
 - RLL→CS:
-  - Tempest mean order: about 1.02
-  - v20a base mean order: about 0.52
-  - v20a lmax24 mean order: about 0.42
+  - v20a base mean finest-grid error ratio: about 2.01× Tempest
+  - v20a base mean fitted order: about 0.52
+  - Interpretation: weak reverse-direction transfer.
+
+## Corrector behavior
+
+The IRNO corrector is not robust under topology holdout.
+
+Across all tested directions, the base stage is usually best. The correction stages generally increase finest-grid error:
+
+- base is best,
+- `lmax=8` is usually worse,
+- `lmax=16` is worse still,
+- `lmax=24` is often the worst.
+
+This suggests that the corrector learned useful refinements only when the target topology family was represented during training.
 
 ## Interpretation
 
-The topology-holdout model shows weak zero-shot transfer to RLL.
+v18's strong RLL behavior was not purely zero-shot topology generalization. RLL exposure during training appears to matter.
 
-The fact that v20a is worse than v18 on RLL suggests that RLL examples in training were important for v18. The corrector appears more brittle than the base model under topology holdout, which suggests that future work should either:
+v20a does learn some geometry-aware behavior, especially for coordinate-like fields and CS→RLL, but it does not reliably transfer to RLL or reverse topology directions.
 
-1. include RLL in training,
-2. add geometry/pole-aware features,
-3. regularize the corrector more strongly, or
-4. use a topology-balanced training split.
+## Next experiments
 
-## Next experiment
+The next controlled experiment should be v20b:
 
-The next controlled run should be v20b:
+- same architecture as v20a,
+- include CS, ICOD, and RLL in training,
+- evaluate on the same convergence suite,
+- compare v20a versus v20b versus v18.
 
-- train with CS, ICOD, and RLL included,
-- keep the same architecture and loss as v20a,
-- evaluate on CS↔ICOD, CS↔RLL, RLL↔CS, and RLL→RLL.
-
+If v20b recovers v18-like RLL behavior, then RLL exposure is the main missing ingredient. If v20b still struggles, v20c should add pole-aware and topology-aware features.
