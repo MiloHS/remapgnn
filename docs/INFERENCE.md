@@ -1,18 +1,56 @@
 # Inference with trained remapgnn weights
 
-We describe tthe current worfflow for the trained `v18_irno_corrector_from_v16_l24_a2p0_mink8` model.
+This page describes how to run research inference with the trained `v18_irno_corrector_from_v16_l24_a2p0_mink8` model.
 
-## Download weights
+The workflow is:
 
-The trained weights are given as a GitHub Release.
+    clone repo
+    download weights
+    prepare source mesh, target mesh, and source field
+    build candidate source-target graph
+    run learned remapping inference
+    optionally visualize the output
+    optionally compute summary metrics
 
-Release page: https://github.com/MiloHS/remapgnn/releases/tag/v18-weights
+## 1. Clone the repository
 
-Download the release archive, place it in the repository root, and extract it with:
+    git clone https://github.com/MiloHS/remapgnn.git
+    cd remapgnn
+
+## 2. Install Python dependencies
+
+Using a virtual environment:
+
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install --upgrade pip
+    pip install -r requirements.txt
+
+Or using conda:
+
+    conda create -n remapgnn python=3.11 -y
+    conda activate remapgnn
+    pip install -r requirements.txt
+
+The main dependencies are PyTorch, NumPy, pandas, SciPy, xarray, pyarrow, netCDF4, and matplotlib.
+
+## 3. Download trained weights
+
+The trained v18 weights are distributed as a GitHub Release asset, not committed directly to the repository.
+
+Release page:
+
+    https://github.com/MiloHS/remapgnn/releases/tag/v18-weights
+
+Download:
+
+    remapgnn_v18_weights.tar.gz
+
+Place the archive in the repository root and extract it:
 
     tar -xzf remapgnn_v18_weights.tar.gz
 
-The archive contains:
+After extraction, the repository should contain:
 
     configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json
     models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt
@@ -20,7 +58,11 @@ The archive contains:
     MANIFEST.md
     SHA256SUMS.txt
 
-## Model summary
+Optional checksum verification:
+
+    sha256sum -c SHA256SUMS.txt
+
+## 4. Model summary
 
 The current best model is v18:
 
@@ -30,91 +72,200 @@ The current best model is v18:
 - Sinkhorn balancing after each correction step
 - final output is a sparse conservative remapping operator
 
-## Expected inference workflow
+The model learns the remapping operator, not the physical field itself.
 
-For a new source-target mesh pair:
+## 5. Input requirements
 
-1. Prepare a source spherical finite-volume mesh.
-2. Prepare a target spherical finite-volume mesh.
-3. Build candidate source-target edges using the same graph rule used in training:
-   - k-distance graph
-   - `alpha = 2.0`
-   - `min_k = 8`
-4. Compute the expected geometric edge features.
-5. Load the v16 base remapper and v18 corrector weights.
-6. Run the base GNN and iterative corrector trajectory.
-7. Sinkhorn-balance the predicted sparse edge weights.
-8. Apply the learned sparse operator to a source field.
+You need three files:
 
-## Current limitation
+    source_mesh.nc
+    target_mesh.nc
+    source_field.nc
 
-The model takes a candidate source-target graph with the same feature schema used during training, does not provide a nice interface for arbitrary NetCDF meshes and fields. 
+The source and target meshes should be spherical finite-volume or cell-centered meshes.
 
-For now, the tested workflow is through the experiment/evaluation scripts used in this repository, using mesh pairs with prepared candidate edge datasets.
+The mesh files should contain longitude, latitude, and preferably cell area. The helper scripts try common names such as:
 
-## Prepared-graph inference script
+    lon, longitude, lonCell, xlon
+    lat, latitude, latCell, ylat
+    cell_area, area, areaCell, cellArea
 
-The repository includes a research inference script for mesh pairs with a prepared candidate edge graph:
+The source field file should contain one value per source cell. For example, if the source field variable is called `temperature`, then `source_field.nc` should contain a variable named `temperature` with length equal to the number of source cells.
 
-    scripts/infer_prepared_pair.py
+## 6. Build a candidate source-target graph
 
-Example:
+The GNN does not consume raw meshes directly. It consumes a sparse source-target candidate graph with geometric edge features.
 
-    python scripts/infer_prepared_pair.py \
-      --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
-      --pair CS-r32_to_ICOD-r32 \
-      --src-field-nc data/MIRA-Datasets/Meshes/UniformlyRefined/CS/sample_NM16_O10_CS-r32_TPW_CFR_TPO_A1_A2.nc \
-      --target-mesh-nc data/MIRA-Datasets/Meshes/UniformlyRefined/ICOD/sample_NM16_O10_ICOD-r32_TPW_CFR_TPO_A1_A2.nc \
-      --field AnalyticalFun1 \
-      --stage lmax24 \
-      --balance-iters 2000 \
-      --out analysis_medium_improv/inference_demo_CS-r32_to_ICOD-r32_AnalyticalFun1.nc \
-      --out-map analysis_medium_improv/inference_demo_CS-r32_to_ICOD-r32_lmax24_operator.npz
+For a new mesh pair, first build this graph:
 
-This script assumes that the edge dataset for the requested pair already exists in the configured analysis directory, for example:
-
-    analysis_medium_improv/edge_dataset_CS-r32_to_ICOD-r32_kdist_a2p0_mink8.parquet
-
-The script writes a target-field NetCDF file and can optionally write the learned sparse operator as a compressed NumPy archive.
-
-## External mesh-pair workflow
-
-For a new spherical finite-volume source-target mesh pair, first build a geometry-only candidate graph:
+    mkdir -p analysis_medium_improv outputs
 
     python scripts/build_external_kdist_graph.py \
-      --src-mesh path/to/source_mesh.nc \
-      --tgt-mesh path/to/target_mesh.nc \
+      --src-mesh my_data/source_mesh.nc \
+      --tgt-mesh my_data/target_mesh.nc \
       --src-name MY-SOURCE \
       --tgt-name MY-TARGET \
       --out analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
       --alpha 2.0 \
       --min-k 8 \
-      --max-k 256
+      --max-k 256 \
+      --normalize-area-sums
 
-Then run inference on a source field:
+This writes:
+
+    analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet
+
+The `--normalize-area-sums` option is useful when source and target meshes have slightly different total area normalizations.
+
+## 7. Run learned remapping inference
+
+Now apply the trained model to a source field.
+
+Example for a field named `temperature`:
 
     python scripts/infer_prepared_pair.py \
       --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
       --pair MY-SOURCE_to_MY-TARGET \
       --edge-parquet analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
-      --src-field-nc path/to/source_field.nc \
-      --target-mesh-nc path/to/target_mesh.nc \
-      --field FIELD_NAME \
+      --src-field-nc my_data/source_field.nc \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --field temperature \
       --stage lmax24 \
       --balance-iters 2000 \
-      --out remapped_FIELD_NAME.nc \
-      --out-map learned_operator.npz
+      --out outputs/temperature_remapped_to_target.nc \
+      --out-map outputs/MY-SOURCE_to_MY-TARGET_learned_operator.npz
 
-Optional visualization and summary utilities:
+This writes:
+
+    outputs/temperature_remapped_to_target.nc
+    outputs/MY-SOURCE_to_MY-TARGET_learned_operator.npz
+
+The NetCDF file contains the remapped target field. The NPZ file contains the learned sparse operator.
+
+For a faster test run, use fewer Sinkhorn iterations:
+
+    --balance-iters 300
+
+For final diagnostics, use:
+
+    --balance-iters 2000
+
+## 8. Visualize the remapped field
+
+If you only have the prediction:
 
     python scripts/visualize_remap_output.py \
-      --pred-nc remapped_FIELD_NAME.nc \
-      --field FIELD_NAME \
-      --target-mesh-nc path/to/target_mesh.nc \
-      --out remapped_FIELD_NAME.png
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --out outputs/temperature_remapped_to_target.png
+
+If you also have a target truth/reference field:
+
+    python scripts/visualize_remap_output.py \
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --truth-nc my_data/target_truth.nc \
+      --truth-field temperature \
+      --out outputs/temperature_prediction_truth_error.png
+
+With truth provided, the figure shows prediction, truth, and error side by side.
+
+## 9. Compute summary metrics
+
+Without truth, compute basic field statistics:
 
     python scripts/summarize_remap_output.py \
-      --pred-nc remapped_FIELD_NAME.nc \
-      --field FIELD_NAME \
-      --target-mesh-nc path/to/target_mesh.nc \
-      --out-csv remapped_FIELD_NAME_summary.csv
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --out-csv outputs/temperature_summary.csv
+
+If the source field and source mesh are provided, the script also computes global conservation:
+
+    python scripts/summarize_remap_output.py \
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --source-nc my_data/source_field.nc \
+      --source-field temperature \
+      --source-mesh-nc my_data/source_mesh.nc \
+      --out-csv outputs/temperature_summary.csv
+
+If target truth is available, compute relative L2 and area-weighted relative L2:
+
+    python scripts/summarize_remap_output.py \
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --truth-nc my_data/target_truth.nc \
+      --truth-field temperature \
+      --source-nc my_data/source_field.nc \
+      --source-field temperature \
+      --source-mesh-nc my_data/source_mesh.nc \
+      --out-csv outputs/temperature_summary.csv
+
+## 10. Full minimal example
+
+For a new source-target mesh pair and a source field called `temperature`:
+
+    git clone https://github.com/MiloHS/remapgnn.git
+    cd remapgnn
+
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install --upgrade pip
+    pip install -r requirements.txt
+
+    tar -xzf remapgnn_v18_weights.tar.gz
+
+    mkdir -p analysis_medium_improv outputs
+
+    python scripts/build_external_kdist_graph.py \
+      --src-mesh my_data/source_mesh.nc \
+      --tgt-mesh my_data/target_mesh.nc \
+      --src-name MY-SOURCE \
+      --tgt-name MY-TARGET \
+      --out analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+      --alpha 2.0 \
+      --min-k 8 \
+      --max-k 256 \
+      --normalize-area-sums
+
+    python scripts/infer_prepared_pair.py \
+      --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
+      --pair MY-SOURCE_to_MY-TARGET \
+      --edge-parquet analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+      --src-field-nc my_data/source_field.nc \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --field temperature \
+      --stage lmax24 \
+      --balance-iters 2000 \
+      --out outputs/temperature_remapped_to_target.nc \
+      --out-map outputs/MY-SOURCE_to_MY-TARGET_learned_operator.npz
+
+    python scripts/visualize_remap_output.py \
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --out outputs/temperature_remapped_to_target.png
+
+    python scripts/summarize_remap_output.py \
+      --pred-nc outputs/temperature_remapped_to_target.nc \
+      --field temperature \
+      --target-mesh-nc my_data/target_mesh.nc \
+      --source-nc my_data/source_field.nc \
+      --source-field temperature \
+      --source-mesh-nc my_data/source_mesh.nc \
+      --out-csv outputs/temperature_summary.csv
+
+## Known limitations
+
+- This is a research inference workflow, not a production package.
+- Performance on completely unseen topologies should be treated as experimental.
+- Users should validate against analytic truth, TempestRemap, or another trusted reference before using outputs scientifically.
+- Very large target meshes can be slow because Sinkhorn balancing is run during inference.
+- RLL source meshes may show pole-related ambiguity.
+- The current timing diagnostics compare learned inference against already-built Tempest maps, not full Tempest map-generation time.
+
