@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 import torch
 
@@ -142,6 +143,57 @@ def write_output(
     out.to_netcdf(out_path)
 
 
+
+def load_geometry_from_edge_parquet(edge_parquet: Path) -> dict:
+    df = pd.read_parquet(edge_parquet)
+
+    required = [
+        "source_index", "target_index",
+        "src_area", "tgt_area",
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing required columns in {edge_parquet}: {missing}")
+
+    src_index = df["source_index"].to_numpy(np.int64)
+    tgt_index = df["target_index"].to_numpy(np.int64)
+
+    n_src = int(src_index.max()) + 1
+    n_tgt = int(tgt_index.max()) + 1
+
+    src_area = np.zeros(n_src, dtype=np.float64)
+    tgt_area = np.zeros(n_tgt, dtype=np.float64)
+
+    src_area[src_index] = df["src_area"].to_numpy(np.float64)
+    tgt_area[tgt_index] = df["tgt_area"].to_numpy(np.float64)
+
+    geom = {
+        "src_index": src_index,
+        "tgt_index": tgt_index,
+        "src_area": src_area,
+        "tgt_area": tgt_area,
+        "n_src": n_src,
+        "n_tgt": n_tgt,
+    }
+
+    # Optional coordinate arrays for diagnostics/visualization.
+    if {"src_x", "src_y", "src_z"}.issubset(df.columns):
+        src_xyz = np.zeros((n_src, 3), dtype=np.float64)
+        src_xyz[src_index, 0] = df["src_x"].to_numpy(np.float64)
+        src_xyz[src_index, 1] = df["src_y"].to_numpy(np.float64)
+        src_xyz[src_index, 2] = df["src_z"].to_numpy(np.float64)
+        geom["src_xyz"] = src_xyz
+
+    if {"tgt_x", "tgt_y", "tgt_z"}.issubset(df.columns):
+        tgt_xyz = np.zeros((n_tgt, 3), dtype=np.float64)
+        tgt_xyz[tgt_index, 0] = df["tgt_x"].to_numpy(np.float64)
+        tgt_xyz[tgt_index, 1] = df["tgt_y"].to_numpy(np.float64)
+        tgt_xyz[tgt_index, 2] = df["tgt_z"].to_numpy(np.float64)
+        geom["tgt_xyz"] = tgt_xyz
+
+    return geom
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Run v18 remapgnn inference on a prepared source-target edge dataset."
@@ -152,6 +204,7 @@ def main():
     ap.add_argument("--field", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--target-mesh-nc", default=None)
+    ap.add_argument("--edge-parquet", default=None, help="Optional external prepared edge parquet for geometry/output sizing.")
     ap.add_argument("--out-map", default=None)
     ap.add_argument("--stage", default="lmax24")
     ap.add_argument("--balance-iters", type=int, default=2000)
@@ -170,7 +223,12 @@ def main():
     print(f"Device: {device}")
 
     print("\nLoading geometry and prepared edge graph.")
-    geom = load_pair_geometry_and_tempest(cfg, args.pair)
+    if args.edge_parquet:
+        print(f"Using external edge parquet: {args.edge_parquet}")
+        geom = load_geometry_from_edge_parquet(Path(args.edge_parquet))
+    else:
+        geom = load_pair_geometry_and_tempest(cfg, args.pair)
+
     n_src = int(geom["n_src"])
     n_tgt = int(geom["n_tgt"])
     print(f"n_src={n_src:,} n_tgt={n_tgt:,} n_edges={len(geom['src_index']):,}")
