@@ -51,3 +51,28 @@ For a new source-target mesh pair:
 The model takes a candidate source-target graph with the same feature schema used during training, does not provide a nice interface for arbitrary NetCDF meshes and fields. 
 
 For now, the tested workflow is through the experiment/evaluation scripts used in this repository, using mesh pairs with prepared candidate edge datasets.
+
+## Prepared-graph inference script
+
+The repository includes a research inference script for mesh pairs with a prepared candidate edge graph:
+
+    scripts/infer_prepared_pair.py
+
+Example:
+
+    python scripts/infer_prepared_pair.py \
+      --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
+      --pair CS-r32_to_ICOD-r32 \
+      --src-field-nc data/MIRA-Datasets/Meshes/UniformlyRefined/CS/sample_NM16_O10_CS-r32_TPW_CFR_TPO_A1_A2.nc \
+      --target-mesh-nc data/MIRA-Datasets/Meshes/UniformlyRefined/ICOD/sample_NM16_O10_ICOD-r32_TPW_CFR_TPO_A1_A2.nc \
+      --field AnalyticalFun1 \
+      --stage lmax24 \
+      --balance-iters 2000 \
+      --out analysis_medium_improv/inference_demo_CS-r32_to_ICOD-r32_AnalyticalFun1.nc \
+      --out-map analysis_medium_improv/inference_demo_CS-r32_to_ICOD-r32_lmax24_operator.npz
+
+This script assumes that the edge dataset for the requested pair already exists in the configured analysis directory, for example:
+
+    analysis_medium_improv/edge_dataset_CS-r32_to_ICOD-r32_kdist_a2p0_mink8.parquet
+
+The script writes a target-field NetCDF file and can optionally write the learned sparse operator as a compressed NumPy archive.
