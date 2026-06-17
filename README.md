@@ -38,6 +38,8 @@ Across six mesh pairs, v18 reduced average field relative L2 error versus Tempes
 
 ## Important docs
 
+- `docs/INFERENCE.md` — how to download the trained v18 weights and current inference workflow
+
 - `docs/MODEL_LINEAGE.md`
 - `docs/RESULTS_SUMMARY.md`
 - `docs/CONVERGENCE_STUDY.md`
