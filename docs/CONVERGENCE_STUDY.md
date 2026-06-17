@@ -128,3 +128,34 @@ The following figures show the finest-grid analytic solution and remapping error
 ![ICOD to CS smooth1 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_ICOD-r128_to_CS-r128_smooth1_corrected_lmax24_solution_errors.png)
 
 ![ICOD to CS smooth2 finest-grid solution and errors](../analysis_medium_improv/github_results/finest_ICOD-r128_to_CS-r128_smooth2_corrected_lmax24_solution_errors.png)
+
+## RLL third-topology diagnostic
+
+We also evaluated RLL as a third mesh topology using three-level refinement sequences:
+
+- `CS-r32 -> RLL-r90-180`
+- `CS-r64 -> RLL-r180-360`
+- `CS-r128 -> RLL-r360-720`
+
+and the reverse direction:
+
+- `RLL-r90-180 -> CS-r32`
+- `RLL-r180-360 -> CS-r64`
+- `RLL-r360-720 -> CS-r128`
+
+This is not a completely unseen topology for v18, because v18 was trained with some coarse RLL pairs. However, the higher-resolution refinement sequence provides an out-of-distribution RLL-resolution diagnostic.
+
+### Summary
+
+For `CS -> RLL`, v18 generalizes strongly. The learned operator gives lower finest-grid relative L2 errors than Tempest on all five analytic test fields, with fitted orders above first order over the three refinement levels.
+
+For `RLL -> CS`, behavior is mixed. The learned operator remains competitive or better on the coordinate fields `x`, `y`, and `z`, but is weaker than Tempest on the nonlinear smooth fields `smooth1` and `smooth2`. This supports the concern that RLL as a source topology, especially near the poles, introduces a harder one-to-many geometric ambiguity.
+
+These RLL results motivate a follow-up training study:
+
+1. train a topology-holdout model with RLL excluded,
+2. evaluate zero-shot performance on RLL pairs,
+3. retrain with RLL included,
+4. add pole-aware features such as latitude, `abs(z)`, and local area/aspect information.
+
+The small result CSVs are included in `analysis_medium_improv/github_results/`. Large generated RLL maps and edge parquet files are excluded from Git tracking.
