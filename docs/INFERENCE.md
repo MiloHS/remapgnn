@@ -181,8 +181,4 @@ If target truth is available, compute relative L2 and area-weighted relative L2:
       --source-field temperature \
       --source-mesh-nc my_data/source_mesh.nc \
       --out-csv outputs/temperature_summary.csv
-- Users should validate against analytic truth, TempestRemap, or another trusted reference before using outputs scientifically.
-- Very large target meshes can be slow because Sinkhorn balancing is run during inference.
-- RLL source meshes may show pole-related ambiguity.
-- The current timing diagnostics compare learned inference against already-built Tempest maps, not full Tempest map-generation time.
 
