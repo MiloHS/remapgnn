@@ -6,6 +6,8 @@ This page describes the current research inference workflow for the trained `v18
 
 The trained weights are distributed separately as a GitHub Release asset, not committed directly to the repository.
 
+Release page: https://github.com/MiloHS/remapgnn/releases/tag/v18-weights
+
 Download the release archive, place it in the repository root, and extract it with:
 
     tar -xzf remapgnn_v18_weights.tar.gz
