@@ -1,10 +1,10 @@
 # Inference with trained remapgnn weights
 
-This page describes the current research inference workflow for the trained `v18_irno_corrector_from_v16_l24_a2p0_mink8` model.
+We describe tthe current worfflow for the trained `v18_irno_corrector_from_v16_l24_a2p0_mink8` model.
 
 ## Download weights
 
-The trained weights are distributed separately as a GitHub Release asset, not committed directly to the repository.
+The trained weights are given as a GitHub Release.
 
 Release page: https://github.com/MiloHS/remapgnn/releases/tag/v18-weights
 
@@ -48,13 +48,6 @@ For a new source-target mesh pair:
 
 ## Current limitation
 
-The current research code does not yet provide a polished one-command interface for arbitrary external NetCDF meshes and fields. The model consumes a candidate source-target graph with the same feature schema used during training. A production-style arbitrary-topology inference script is planned.
+The model takes a candidate source-target graph with the same feature schema used during training, does not provide a nice interface for arbitrary NetCDF meshes and fields. 
 
 For now, the tested workflow is through the experiment/evaluation scripts used in this repository, using mesh pairs with prepared candidate edge datasets.
-
-## Known issues
-
-- Very large target meshes can be slow because Sinkhorn balancing is run during inference.
-- RLL meshes may show pole-related ambiguity when used as source meshes.
-- Performance on completely unseen topologies should be treated as experimental.
-- The current diagnostics compare learned inference against already-built Tempest maps; this is not the same as comparing against full Tempest map-generation time.
