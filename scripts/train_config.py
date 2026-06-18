@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import os
 import time
 import sys
 import numpy as np
@@ -19,10 +20,38 @@ from remapgnn.losses import pair_loss
 
 
 def set_seed(seed: int) -> None:
+    # PYTHONHASHSEED only takes effect for child processes started after this point;
+    # for in-process determinism we avoid relying on str hash() (see _stable_pair_seed
+    # in train_config_balanced_harmonic.py).
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except Exception:
+        pass
+
+
+def warn_split_leakage(train_pairs, checkpoint_pairs, test_pair) -> None:
+    """Loudly flag train/val/test contamination in the configured split."""
+    tp = set(train_pairs)
+    cp = set(checkpoint_pairs or [])
+    if test_pair in cp:
+        print(
+            f"WARNING: test_pair {test_pair!r} is in checkpoint_pairs — model selection "
+            f"peeks at the test pair (test-set leakage). Remove it from checkpoint_pairs."
+        )
+    if cp and cp.issubset(tp):
+        print(
+            f"WARNING: every checkpoint/validation pair is also a training pair — there is "
+            f"no clean held-out validation signal for model selection: {sorted(cp)}"
+        )
+    elif cp & tp:
+        print(f"WARNING: checkpoint_pairs overlap train_pairs: {sorted(cp & tp)}")
 
 
 def train_eval_pair(model, cfg, pair, stats, device, n_sinkhorn_iter, lambdas):
@@ -71,19 +100,22 @@ def main():
     val_pair = tr["val_pair"]
     test_pair = tr["test_pair"]
 
+    warn_split_leakage(train_pairs, [val_pair], test_pair)
+
     if args.smoke:
         print("\nSMOKE MODE: one train pair, one epoch, low Sinkhorn iterations.")
         train_pairs = train_pairs[:1]
         epochs = 1
         sinkhorn_iters_train = 3
         sinkhorn_iters_eval = 3
-        stat_pairs = train_pairs + [val_pair, test_pair]
+        # Normalization stats are fit on TRAINING pairs only (no val/test leakage).
+        stat_pairs = list(train_pairs)
     else:
         epochs = int(args.epochs if args.epochs is not None else tr.get("epochs", 80))
         sinkhorn_iters_train = int(tr.get("sinkhorn_iters_train", 30))
         sinkhorn_iters_eval = int(tr.get("sinkhorn_iters_eval", 300))
-        # Match old scripts: TRAIN_PAIRS + [VAL_PAIR, TEST_PAIR], including duplicates.
-        stat_pairs = train_pairs + [val_pair, test_pair]
+        # Normalization stats are fit on TRAINING pairs only (no val/test leakage).
+        stat_pairs = list(train_pairs)
 
     hidden = int(tr.get("hidden", 128))
     lr = float(tr.get("lr", 2.0e-4))

@@ -43,7 +43,8 @@ def select_state(states, wanted_label):
     }
 
     for state in states:
-        if state.get("step_label") == wanted_label:
+        # operator_sequence stores the stage name under "label"; tolerate "step_label" too.
+        if state.get("label", state.get("step_label")) == wanted_label:
             return state
 
     if wanted_label in label_to_index:

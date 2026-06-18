@@ -672,12 +672,13 @@ def build_model(
         )
 
     if architecture == "pair_conditioned_gated_hybrid_attention":
-        return GatedHybridAttentionGNNSinkhorn(
+        return GateConditionedHybridAttentionGNNSinkhorn(
             src_dim=src_dim,
             tgt_dim=tgt_dim,
             edge_dim=edge_dim,
             hidden=hidden,
             decoder_chunk_size=decoder_chunk_size,
+            pair_cond_dim=6,
         )
 
     if architecture == "residual_gated_hybrid_attention":

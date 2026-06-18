@@ -4,7 +4,7 @@ Learned TempestRemap-style conservative remapping operators for spherical climat
 
 ## Core idea
 
-For a source mesh and target mesh, we build candidate source-target edges. The model predicts edge scores on this graph. Sinkhorn balancing turns those scores into a sparse mass matrix that satisfies conservative remapping constraints. The remapping weights are then applied to fields on the source mesh.
+For a source mesh and target mesh, we build candidate source-target edges. The model predicts edge scores on this graph. Sinkhorn balancing turns those scores into a sparse mass matrix. The balancing ends on the source marginal, so global (source) mass conservation is enforced tightly; the target row sums (consistency — constants mapping to constants) are tracked and softly penalized rather than satisfied exactly. The remapping weights are then applied to fields on the source mesh.
 
 The goal is to learn a fast conservative approximation to TempestRemap operators across mesh pairs.
 
@@ -26,7 +26,22 @@ The correction iteration is:
 3. correction with `lmax=16`
 4. correction with `lmax=24`
 
-Across six mesh pairs, v18 reduced average field relative L2 error versus Tempest from about `0.002956` to `0.002715`.
+The reported metric is **agreement error with TempestRemap** — the relative L2 distance between the
+learned remap and Tempest's remap of the same field, averaged over the field set. Lower means the
+model reproduces Tempest more closely; this is *fidelity to Tempest*, **not** accuracy against an
+analytic truth.
+
+Numbers below are from a clean retrain (full 8-pair training, a 2-pair held-out validation set used
+for model selection, and the test pair `RLL-r90-180_to_CS-r16` held out of both — see
+`docs/AUDIT_REPORT.md`). Across the six evaluation pairs the corrector lowers the mean agreement
+error from `0.00387` to `0.00354` (≈8.6%).
+
+**This six-pair mean is in-sample-dominated and overstates generalization.** Five of the six pairs
+are training pairs, where the corrector improves a lot (≈12–19%); on the genuinely held-out pair
+`RLL-r90-180_to_CS-r16` it improves only `0.00389` → `0.00385` (**≈1%**). The large train-vs-held-out
+gap is an overfitting signature: with the current ~8 same-family pairs the corrector learns to mimic
+Tempest on pairs it has seen, and that barely transfers to a new pair. (Held-out n=1, single seed.)
+The generalization story for this project is topology diversity (v20a/v20b), not the corrector alone.
 
 ## Repository structure
 

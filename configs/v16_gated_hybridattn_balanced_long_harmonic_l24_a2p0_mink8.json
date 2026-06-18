@@ -35,7 +35,7 @@
       "CS-r32_to_ICOD-r32",
       "ICOD-r32_to_CS-r32"
     ],
-    "val_pair": "RLL-r90-180_to_ICOD-r16",
+    "val_pair": "CS-r16_to_ICOD-r16",
     "test_pair": "RLL-r90-180_to_CS-r16",
     "hidden": 128,
     "epochs": 200,
@@ -51,10 +51,8 @@
     "lambda_neg_s": 0.05,
     "lambda_bce": 0.05,
     "checkpoint_pairs": [
-      "RLL-r90-180_to_ICOD-r16",
-      "RLL-r90-180_to_CS-r16",
-      "CS-r32_to_RLL-r90-180",
-      "ICOD-r32_to_CS-r32"
+      "CS-r16_to_ICOD-r16",
+      "ICOD-r16_to_CS-r16"
     ],
     "checkpoint_score": {
       "metric": "mean_rel_l2_positive_edges",

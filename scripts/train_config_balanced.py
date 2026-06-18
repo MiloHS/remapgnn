@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import os
 import time
 import sys
 import numpy as np
@@ -19,10 +20,35 @@ from remapgnn.losses import pair_loss
 
 
 def set_seed(seed: int) -> None:
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except Exception:
+        pass
+
+
+def warn_split_leakage(train_pairs, checkpoint_pairs, test_pair) -> None:
+    """Loudly flag train/val/test contamination in the configured split."""
+    tp = set(train_pairs)
+    cp = set(checkpoint_pairs or [])
+    if test_pair in cp:
+        print(
+            f"WARNING: test_pair {test_pair!r} is in checkpoint_pairs — model selection "
+            f"peeks at the test pair (test-set leakage). Remove it from checkpoint_pairs."
+        )
+    if cp and cp.issubset(tp):
+        print(
+            f"WARNING: every checkpoint/validation pair is also a training pair — there is "
+            f"no clean held-out validation signal for model selection: {sorted(cp)}"
+        )
+    elif cp & tp:
+        print(f"WARNING: checkpoint_pairs overlap train_pairs: {sorted(cp & tp)}")
 
 
 def unique_keep_order(xs):
@@ -186,6 +212,8 @@ def main():
         )
     )
 
+    warn_split_leakage(train_pairs, checkpoint_pairs, test_pair)
+
     score_cfg = tr.get("checkpoint_score", {})
     row_weight = float(score_cfg.get("row_weight", 0.05))
 
@@ -213,7 +241,8 @@ def main():
     print(f"  src:  {src_features}")
     print(f"  tgt:  {tgt_features}")
 
-    stat_pairs = unique_keep_order(train_pairs + checkpoint_pairs + [test_pair] + list(cfg.pairs))
+    # Normalization stats are fit on TRAINING pairs only (no checkpoint/test/eval leakage).
+    stat_pairs = unique_keep_order(train_pairs)
     stats = compute_feature_stats(
         cfg,
         stat_pairs,

@@ -46,7 +46,8 @@ def select_state(states, wanted_label: str):
     }
 
     for state in states:
-        if state.get("step_label") == wanted_label:
+        # operator_sequence stores the stage name under "label"; tolerate "step_label" too.
+        if state.get("label", state.get("step_label")) == wanted_label:
             return state
 
     if wanted_label in label_to_index:
@@ -54,7 +55,7 @@ def select_state(states, wanted_label: str):
         if idx < len(states):
             return states[idx]
 
-    labels = [s.get("step_label") for s in states]
+    labels = [s.get("label", s.get("step_label")) for s in states]
     raise ValueError(
         f"Could not find stage {wanted_label}. "
         f"Available labels={labels}; number of states={len(states)}"

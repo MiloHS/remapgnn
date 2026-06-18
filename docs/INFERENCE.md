@@ -50,6 +50,22 @@ Place it in the repository root and extract it:
 
     tar -xzf remapgnn_v18_weights.tar.gz
 
+**Important — the v18 corrector needs the frozen v16 base too.** v18 inference is not a single
+file: the corrector checkpoint stores the base model's paths and reads the v16 base checkpoint at
+run time for both the normalization stats and the base operator weights. The release archive must
+therefore contain *both* checkpoints, extracted into `models_medium_improv/`:
+
+    models_medium_improv/bipartite_gnn_sinkhorn_v18_irno_corrector_from_v16_l24_kdist_a2p0_mink8.pt
+    models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt
+
+The base paths are stored as repo-relative paths, so run all inference commands **from the
+repository root**. After extracting, verify both files exist:
+
+    ls models_medium_improv/bipartite_gnn_sinkhorn_v18_irno_corrector_from_v16_l24_kdist_a2p0_mink8.pt
+    ls models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt
+
+(The matching `configs/v16_*.json` and `configs/v18_*.json` are already in the repository.)
+
 ## 4. Model summary
 
 The current model is v18:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import hashlib
+import os
 import time
 import sys
 import numpy as np
@@ -20,10 +22,40 @@ from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
 
 
 def set_seed(seed: int) -> None:
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except Exception:
+        pass
+
+
+def _stable_pair_seed(pair: str) -> int:
+    """Deterministic per-pair seed (independent of PYTHONHASHSEED salting)."""
+    return int.from_bytes(hashlib.sha256(pair.encode("utf-8")).digest()[:4], "big")
+
+
+def warn_split_leakage(train_pairs, checkpoint_pairs, test_pair) -> None:
+    """Loudly flag train/val/test contamination in the configured split."""
+    tp = set(train_pairs)
+    cp = set(checkpoint_pairs or [])
+    if test_pair in cp:
+        print(
+            f"WARNING: test_pair {test_pair!r} is in checkpoint_pairs — model selection "
+            f"peeks at the test pair (test-set leakage). Remove it from checkpoint_pairs."
+        )
+    if cp and cp.issubset(tp):
+        print(
+            f"WARNING: every checkpoint/validation pair is also a training pair — there is "
+            f"no clean held-out validation signal for model selection: {sorted(cp)}"
+        )
+    elif cp & tp:
+        print(f"WARNING: checkpoint_pairs overlap train_pairs: {sorted(cp & tp)}")
 
 
 def unique_keep_order(xs):
@@ -126,7 +158,7 @@ def read_source_xyz_from_edges(edge_path: Path, n_src: int) -> np.ndarray:
 
 
 def build_harmonic_fields(cfg, pair: str, n_src: int, degrees, modes_per_degree: int, seed: int) -> torch.Tensor:
-    rng = np.random.default_rng(seed + abs(hash(pair)) % 1000000)
+    rng = np.random.default_rng(seed + _stable_pair_seed(pair) % 1000000)
     xyz = read_source_xyz_from_edges(cfg.edge_path(pair), n_src=n_src)
 
     fields = []
@@ -503,6 +535,8 @@ def main():
     test_pair = tr.get("test_pair", cfg.pairs[0])
     checkpoint_pairs = list(tr.get("checkpoint_pairs", tr.get("validation_pairs", [val_pair])))
 
+    warn_split_leakage(train_pairs, checkpoint_pairs, test_pair)
+
     score_cfg = tr.get("checkpoint_score", {})
     row_weight = float(score_cfg.get("row_weight", 0.05))
     field_score_weight = harmonic_cfg["checkpoint_field_weight"]
@@ -539,13 +573,17 @@ def main():
     print(f"  max_fields_per_step: {harmonic_cfg['max_fields_per_step']}")
     print(f"  ckpt_field_weight:   {harmonic_cfg['checkpoint_field_weight']}")
 
-    stat_pairs = unique_keep_order(train_pairs + checkpoint_pairs + [test_pair] + list(cfg.pairs))
+    # Normalization stats are fit on TRAINING pairs only (no checkpoint/test/eval leakage).
+    stat_pairs = unique_keep_order(train_pairs)
     stats = compute_feature_stats(cfg, stat_pairs, sample_per_pair=stat_sample_per_pair, seed=seed)
+
+    # The harmonic cache must still cover every pair we ever evaluate (train + checkpoint + test).
+    cache_pairs = unique_keep_order(train_pairs + checkpoint_pairs + [test_pair] + list(cfg.pairs))
 
     print()
     print("Building harmonic field cache...")
     harmonic_cache = {}
-    for pair in stat_pairs:
+    for pair in cache_pairs:
         tmp_batch = load_pair_tensors(cfg, pair, stats, device=torch.device("cpu"))
         n_src = int(tmp_batch["n_src"].item() if hasattr(tmp_batch["n_src"], "item") else tmp_batch["n_src"])
         del tmp_batch

@@ -26,6 +26,7 @@ from train_config_balanced_harmonic import (
     build_harmonic_fields,
     harmonic_loss_from_operator,
     model_outputs_to_q,
+    warn_split_leakage,
 )
 
 
@@ -548,6 +549,8 @@ def main():
     train_pairs = list(tr.get("train_pairs", cfg.pairs))
     checkpoint_pairs = list(tr.get("checkpoint_pairs", tr.get("validation_pairs", [train_pairs[0]])))
     test_pair = tr.get("test_pair", cfg.pairs[0])
+
+    warn_split_leakage(train_pairs, checkpoint_pairs, test_pair)
 
     if args.smoke:
         print()

@@ -1,8 +1,14 @@
-numpy
-pandas
-pyarrow
-torch
-xarray
-netCDF4
-scipy
-matplotlib
+# Pinned to the versions used to produce the committed results.
+# Tested on LCRC/Swing with Python 3.11.15 (conda env: remap_gpu).
+#
+# torch here was the CUDA 12.4 build (torch==2.6.0+cu124). On a CUDA machine install with:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# On CPU-only, `pip install torch==2.6.0` resolves the CPU build.
+numpy==2.4.4
+pandas==3.0.3
+pyarrow==24.0.0
+torch==2.6.0
+xarray==2026.4.0
+netCDF4==1.7.4
+scipy==1.17.1
+matplotlib==3.10.9
