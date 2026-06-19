@@ -31,14 +31,13 @@
     "train_pairs": [
       "RLL-r90-180_to_ICOD-r16",
       "RLL-r90-180_to_CS-r32",
-      "RLL-r30-60_to_CS-r16",
       "RLL-r30-60_to_ICOD-r16",
       "CS-r32_to_RLL-r90-180",
       "ICOD-r32_to_RLL-r90-180",
       "CS-r32_to_ICOD-r32",
       "ICOD-r32_to_CS-r32"
     ],
-    "val_pair": "RLL-r90-180_to_ICOD-r16",
+    "val_pair": "CS-r16_to_ICOD-r16",
     "test_pair": "RLL-r90-180_to_CS-r16",
     "hidden": 128,
     "epochs": 80,
@@ -54,10 +53,9 @@
     "lambda_neg_s": 0.05,
     "lambda_bce": 0.05,
     "checkpoint_pairs": [
-      "RLL-r90-180_to_ICOD-r16",
-      "RLL-r90-180_to_CS-r16",
-      "CS-r32_to_RLL-r90-180",
-      "ICOD-r32_to_CS-r32"
+      "CS-r16_to_ICOD-r16",
+      "ICOD-r16_to_CS-r16",
+      "RLL-r30-60_to_CS-r16"
     ],
     "checkpoint_score": {
       "metric": "mean_rel_l2_positive_edges",
@@ -89,7 +87,7 @@
     "Topography"
   ],
   "irno_corrector": {
-    "base_config": "configs/v16_gated_hybridattn_balanced_long_harmonic_l24_a2p0_mink8.json",
+    "base_config": "configs/v20b_base_diverse_topologies_l24_a2p0_mink8.json",
     "base_model_path": "models_medium_improv/bipartite_gnn_sinkhorn_v20b_base_diverse_topologies_l24_kdist_a2p0_mink8.pt",
     "corrector_architecture": "gated_hybrid_attention",
     "hidden": 128,

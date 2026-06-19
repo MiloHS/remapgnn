@@ -8,54 +8,53 @@ v20a trained only on CS↔ICOD.
 
 v20b uses the same broad architecture and loss family, but restores a diverse training set containing RLL, CS, and ICOD directions.
 
-## Main result
+## Main result (clean re-run, audit-corrected)
 
-v20b strongly supports the topology-diversity hypothesis.
+v20b supports the topology-diversity hypothesis, but **more modestly than the original numbers
+suggested**. The original v20b numbers were optimistically biased by an evaluation-leakage bug (the
+test pair and several eval pairs were in `checkpoint_pairs`, and normalization stats were fit on
+eval pairs — see `AUDIT_REPORT.md`). After fixing the split (test fully held out, a **representative
+held-out validation set** `{CS-r16↔ICOD-r16, RLL-r30-60_to_CS-r16}`, train-only stats) and
+retraining, the finding holds on 3 of 4 directions with smaller margins.
 
-Compared with v20a, v20b substantially improves finest-grid error ratios and observed convergence behavior in the forward directions.
+Metric: finest-grid mean ratio of `area_rel_l2` vs Tempest, averaged over functions
+`{x, y, z, smooth1, smooth2}` (base stage).
 
-## Actual-error summary
+| direction | v20a (clean) | v20b (clean) | diversity effect | v20b vs Tempest |
+|---|---:|---:|---|---|
+| CS→ICOD | 1.75× | **0.77×** | 2.3× better | beats Tempest |
+| CS→RLL  | 1.36× | **0.64×** | 2.1× better | beats Tempest |
+| ICOD→CS | 4.10× | 3.74× | ~1.1× (marginal) | worse than Tempest |
+| RLL→CS  | 1.84× | **2.58×** | 0.71× (diversity hurts) | worse than Tempest |
 
-From `analysis_medium_improv/github_results/v20a_vs_v20b_actual_error_summary.csv`:
+For reference, the original (leakage-inflated) v20b base ratios were 0.56 / 0.54 / 3.23 / 2.19. The
+clean numbers are ~15–40% worse, and **RLL→CS reverses** (clean v20b is worse than v20a there).
+Most of an even larger apparent gap in a first clean attempt turned out to be a too-narrow
+(CS↔ICOD-only) validation set; adding an RLL→CS validation pair recovered v20b substantially, so the
+true leakage inflation is the ~15–40% residual above.
 
-- CS→ICOD:
-  - v20a base mean ratio vs Tempest: about 1.72
-  - v20b base mean ratio vs Tempest: about 0.56
-  - v20b improves over v20a by about 3.1× and beats Tempest on mean finest-grid error.
+## Corrector behavior (clean)
 
-- CS→RLL:
-  - v20a base mean ratio vs Tempest: about 1.30
-  - v20b base mean ratio vs Tempest: about 0.54
-  - v20b improves over v20a by about 2.4× and beats Tempest on mean finest-grid error.
+In the clean re-run the v20b corrector adds a small, consistent improvement at the finest grid
+(~10%): CS→ICOD 0.77×→0.69×, CS→RLL 0.64×→0.59×, ICOD→CS 3.74×→3.27×, RLL→CS 2.58×→2.44×
+(base→lmax24). This is unlike the v18 / topology-holdout case where the corrector did not help on
+held-out resolutions — suggesting the corrector generalizes only when trained on diverse
+topologies, and even then the effect is modest.
 
-- ICOD→CS:
-  - v20a base mean ratio vs Tempest: about 4.51
-  - v20b base mean ratio vs Tempest: about 3.23
-  - v20b improves, but this remains a hard reverse direction.
+## Interpretation (clean)
 
-- RLL→CS:
-  - v20a base mean ratio vs Tempest: about 2.01
-  - v20b base mean ratio vs Tempest: about 2.19
-  - base does not improve, but the v20b corrector helps. The lmax24 stage improves to about 1.86× Tempest.
+Topology diversity genuinely improves transfer on **CS-source directions** (CS→ICOD, CS→RLL), where
+the learned operator beats Tempest at the finest grid. On **reverse-to-CS directions** it is at best
+marginal (ICOD→CS) or slightly harmful (RLL→CS), so reverse-to-CS transfer remains the weak spot.
+The original "≈2–3× across the board, beats Tempest" overstated the effect; the corrected story is
+"diversity clearly helps forward directions; reverse-to-CS is still unsolved." This motivates v20c
+with pole-aware / topology-aware features.
 
-## Corrector behavior
-
-The v20a corrector generally worsened actual finest-grid error.
-
-In v20b, the corrector still slightly worsens the already-strong forward directions, but it helps in the hard reverse directions:
-
-- ICOD→CS improves from about 3.23× Tempest at base to about 2.75× at lmax24.
-- RLL→CS improves from about 2.19× Tempest at base to about 1.86× at lmax24.
-
-This suggests the corrector needs topology diversity to learn useful refinements.
-
-## Interpretation
-
-v20a showed partial zero-shot topology transfer, but was limited by its narrow training topology set.
-
-v20b shows that adding diverse topology exposure can produce much stronger transfer. The learned model can outperform Tempest on some finest-grid mean errors in forward directions, especially CS→ICOD and CS→RLL.
-
-The remaining weakness is reverse-to-CS transfer, especially ICOD→CS and RLL→CS. This motivates v20c with pole-aware and topology-aware features.
+Caveats: single seed, no error bars; the metric is finest-grid agreement-style error (the ratio is
+vs Tempest, with accuracy measured against analytic truth at held-out resolutions). Clean per-pair
+CSVs: `analysis_medium_improv/clean_v20_convergence/` (v20a + v20b narrow-val) and
+`analysis_medium_improv/clean_v20b_repval_convergence/` (v20b representative-val); the original
+pre-audit CSVs remain under `analysis_medium_improv/github_results/`.
 
 ## Next experiments
 
@@ -69,3 +68,4 @@ The remaining weakness is reverse-to-CS transfer, especially ICOD→CS and RLL�
    - candidate rank
    - local source/target degree
 3. Compare v20a, v20b, v20c, and v18 using actual finest-grid error ratios, not just fitted order.
+4. Repeat the clean v20b result under multiple seeds to put error bars on the topology-diversity effect.

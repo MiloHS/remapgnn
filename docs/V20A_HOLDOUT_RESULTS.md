@@ -52,6 +52,16 @@ From `analysis_medium_improv/github_results/v20a_actual_error_stage_summary.csv`
   - v20a base mean fitted order: about 0.52
   - Interpretation: weak reverse-direction transfer.
 
+## Clean re-run (audit)
+
+After the evaluation-leakage fixes (see `AUDIT_REPORT.md`) and retraining with a clean split
+(held-out validation `{CS-r16↔ICOD-r16, ICOD-r16_to_CS-r16}`, train-only stats), v20a **reproduces**
+the numbers above within ~10–20%: clean base finest-grid ratios CS→ICOD ≈ 1.75×, ICOD→CS ≈ 4.10×,
+CS→RLL ≈ 1.36×, RLL→CS ≈ 1.84× (vs published 1.72 / 4.51 / 1.30 / 2.01). v20a's leakage was minor
+(it trains on only 2 pairs), so little changed — this run validates the eval pipeline (Tempest
+errors match the originals to machine precision). The v20b result, by contrast, was notably
+leakage-inflated; see `V20B_DIVERSE_TOPOLOGY_RESULTS.md`.
+
 ## Corrector behavior
 
 The IRNO corrector is not robust under topology holdout.
