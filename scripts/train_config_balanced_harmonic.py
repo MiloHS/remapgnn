@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from remapgnn.config import load_config
 from remapgnn.data import compute_feature_stats, load_pair_tensors, get_feature_lists
 from remapgnn.models import build_model
-from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
+from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights, converged_balance
 
 
 def set_seed(seed: int) -> None:
@@ -281,6 +281,8 @@ def pair_loss_with_harmonics(
     lambda_bce: float,
     lambda_field: float,
     max_fields_per_step: int,
+    scale_cache: dict | None = None,
+    pair_key: str | None = None,
 ):
     src_index = batch["src_index"]
     tgt_index = batch["tgt_index"]
@@ -304,7 +306,12 @@ def pair_loss_with_harmonics(
     edge_logit, raw_weight, q = model_outputs_to_q(out)
     q = q.float()
 
-    M = sparse_sinkhorn_balance(
+    # Balance to CONVERGENCE (conservative AND consistent) via the frozen-dual gradient, instead of
+    # a fixed under-converged unroll. `n_sinkhorn_iter` is the max-iter cap. When a scale_cache is
+    # supplied, warm-start from this pair's previous-step converged duals (identical fixed point,
+    # far fewer iters since the model moves only one optimizer step between visits).
+    warm_scale = scale_cache.get(pair_key) if (scale_cache is not None and pair_key is not None) else None
+    M, s_conv = converged_balance(
         q=q,
         src_index=src_index,
         tgt_index=tgt_index,
@@ -312,8 +319,13 @@ def pair_loss_with_harmonics(
         area_tgt=area_tgt,
         n_src=n_src,
         n_tgt=n_tgt,
-        n_iter=n_sinkhorn_iter,
+        tol=1.0e-6,
+        max_iter=max(int(n_sinkhorn_iter), 20000),
+        warm_scale=warm_scale,
+        return_scale=True,
     )
+    if scale_cache is not None and pair_key is not None:
+        scale_cache[pair_key] = s_conv
 
     S_pred = sparse_operator_weights(
         M=M,
@@ -636,6 +648,9 @@ def main():
     best_epoch = None
     best_pack = None
 
+    # Per-pair converged-dual cache: warm-start each pair's Sinkhorn from its previous-step duals.
+    scale_cache = {}
+
     for epoch in range(1, epochs + 1):
         epoch_train_pairs = list(train_pairs)
         np.random.shuffle(epoch_train_pairs)
@@ -657,6 +672,8 @@ def main():
                 lambda_bce=lambdas["lambda_bce"],
                 lambda_field=harmonic_cfg["lambda_field"],
                 max_fields_per_step=harmonic_cfg["max_fields_per_step"],
+                scale_cache=scale_cache,
+                pair_key=pair,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

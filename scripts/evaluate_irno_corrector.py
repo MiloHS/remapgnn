@@ -167,7 +167,7 @@ def compute_operator_from_logq_eval(
     n_iter,
     tol=1.0e-6,
 ):
-    from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
+    from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights, DEFAULT_OMEGA
 
     q = torch.exp(torch.clamp(logq.double(), min=-60.0, max=40.0))
     # Eval/inference: iterate Sinkhorn to convergence so the operator is simultaneously
@@ -185,6 +185,7 @@ def compute_operator_from_logq_eval(
         n_iter=n_iter,
         tol=tol,
         max_iter=max_iter,
+        omega=(1.0 if tol is None else DEFAULT_OMEGA),
     )
     S = sparse_operator_weights(
         M=M,
