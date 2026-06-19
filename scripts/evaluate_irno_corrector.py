@@ -165,10 +165,15 @@ def compute_operator_from_logq_eval(
     n_src,
     n_tgt,
     n_iter,
+    tol=1.0e-6,
 ):
     from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
 
     q = torch.exp(torch.clamp(logq.double(), min=-60.0, max=40.0))
+    # Eval/inference: iterate Sinkhorn to convergence so the operator is simultaneously
+    # conservative AND consistent (rows sum to 1). `n_iter` (e.g. --balance-iters) acts as the
+    # floor for the max-iteration cap. Setting tol=None reverts to the old fixed-count behavior.
+    max_iter = None if tol is None else max(int(n_iter), 50000)
     M = sparse_sinkhorn_balance(
         q=q,
         src_index=src_index,
@@ -178,6 +183,8 @@ def compute_operator_from_logq_eval(
         n_src=n_src,
         n_tgt=n_tgt,
         n_iter=n_iter,
+        tol=tol,
+        max_iter=max_iter,
     )
     S = sparse_operator_weights(
         M=M,
