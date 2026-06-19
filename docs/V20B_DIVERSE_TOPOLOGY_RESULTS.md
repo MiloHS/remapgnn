@@ -8,7 +8,35 @@ v20a trained only on CS↔ICOD.
 
 v20b uses the same broad architecture and loss family, but restores a diverse training set containing RLL, CS, and ICOD directions.
 
-## Main result (clean re-run, audit-corrected)
+## Update: converged Sinkhorn (supersedes the iteration-limited numbers below)
+
+The numbers in the rest of this file were taken at 2000 Sinkhorn iterations, where the operator is
+**conservative but not consistent** (rows sum to 1 only to ~10⁻³) — Sinkhorn under-convergence, not
+a model limitation (see `SINKHORN_CONVERGENCE.md`). Running the balancer **to convergence** makes the
+operator simultaneously conservative *and* consistent and changes the result qualitatively:
+**v20b beats Tempest on all four directions**, and v20a is competitive everywhere.
+
+Finest-grid mean error ratio vs Tempest (functions x/y/z/smooth1/smooth2, base operator, converged
+balancing; conservation residual ~10⁻⁹ throughout):
+
+| direction | v20a (no RLL) | v20b (diverse) |
+|---|---:|---:|
+| CS→ICOD | 0.88× | **0.29×** |
+| ICOD→CS | 1.48× | **0.57×** |
+| CS→RLL  | 0.72× | **0.34×** |
+| RLL→CS  | 1.01× | **0.47×** |
+
+Topology diversity still helps in every direction (v20b < v20a throughout), and the
+previously-"unsolved" reverse-to-CS directions are now well below Tempest for v20b. Note the
+corrector (lmax24) is **no longer beneficial** on the converged base — it was trained against the
+under-converged operator and now slightly *increases* finest-grid error (e.g. v20b CS→ICOD
+0.29→0.38), so the converged base alone is the best model; the corrector would need retraining in
+the converged regime, or may be dropped. Source CSV:
+`analysis_medium_improv/github_results/v20_converged_finest_error_summary.csv`.
+
+The sections below are retained for context but are superseded by these converged numbers.
+
+## Main result (clean re-run, audit-corrected; iteration-limited — superseded by the section above)
 
 v20b supports the topology-diversity hypothesis, but **more modestly than the original numbers
 suggested**. The original v20b numbers were optimistically biased by an evaluation-leakage bug (the

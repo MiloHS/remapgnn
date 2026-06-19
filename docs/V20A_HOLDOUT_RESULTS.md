@@ -62,6 +62,11 @@ CS→RLL ≈ 1.36×, RLL→CS ≈ 1.84× (vs published 1.72 / 4.51 / 1.30 / 2.01
 errors match the originals to machine precision). The v20b result, by contrast, was notably
 leakage-inflated; see `V20B_DIVERSE_TOPOLOGY_RESULTS.md`.
 
+Note also that all the ratios above are at 2000 Sinkhorn iterations, where the operator is not yet
+consistent. With the balancer run **to convergence** (see `SINKHORN_CONVERGENCE.md`), v20a's
+finest-grid base ratios improve to ≈0.88 (CS→ICOD), 1.48 (ICOD→CS), 0.72 (CS→RLL), 1.01 (RLL→CS) —
+competitive with Tempest even with no RLL in training — and conservation is retained.
+
 ## Corrector behavior
 
 The IRNO corrector is not robust under topology holdout.

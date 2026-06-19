@@ -1,0 +1,17 @@
+model,direction,stage,finest_pair,mean_ratio_vs_tempest,balance,functions
+v20a,CS_to_ICOD,base,CS-r128_to_ICOD-r128,0.8783,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,CS_to_ICOD,corrected_lmax24,CS-r128_to_ICOD-r128,1.0347,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,ICOD_to_CS,base,ICOD-r128_to_CS-r128,1.4767,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,ICOD_to_CS,corrected_lmax24,ICOD-r128_to_CS-r128,1.5523,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,CS_to_RLL,base,CS-r128_to_RLL-r360-720,0.7238,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,CS_to_RLL,corrected_lmax24,CS-r128_to_RLL-r360-720,0.8547,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,RLL_to_CS,base,RLL-r360-720_to_CS-r128,1.0112,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20a,RLL_to_CS,corrected_lmax24,RLL-r360-720_to_CS-r128,0.9997,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,CS_to_ICOD,base,CS-r128_to_ICOD-r128,0.2948,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,CS_to_ICOD,corrected_lmax24,CS-r128_to_ICOD-r128,0.3846,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,ICOD_to_CS,base,ICOD-r128_to_CS-r128,0.5696,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,ICOD_to_CS,corrected_lmax24,ICOD-r128_to_CS-r128,0.8500,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,CS_to_RLL,base,CS-r128_to_RLL-r360-720,0.3358,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,CS_to_RLL,corrected_lmax24,CS-r128_to_RLL-r360-720,0.3983,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,RLL_to_CS,base,RLL-r360-720_to_CS-r128,0.4679,sinkhorn_30k_converged,x|y|z|smooth1|smooth2
+v20b,RLL_to_CS,corrected_lmax24,RLL-r360-720_to_CS-r128,0.4578,sinkhorn_30k_converged,x|y|z|smooth1|smooth2

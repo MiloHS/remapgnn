@@ -89,8 +89,15 @@ its own.
 
 The project's actual generalization result is **topology diversity** (v20a → v20b): broadening the
 training topologies, not adding correction stages, is what improved transfer (see
-`V20A_HOLDOUT_RESULTS.md` / `V20B_DIVERSE_TOPOLOGY_RESULTS.md`). The natural next experiment is to
-combine the corrector with v20-style diverse training and re-measure held-out generalization.
+`V20A_HOLDOUT_RESULTS.md` / `V20B_DIVERSE_TOPOLOGY_RESULTS.md`).
+
+**Major update (Sinkhorn convergence):** the operator was conservative but not *consistent* at the
+iteration counts used, and that consistency drift — not geometry — was the dominant reverse-to-CS
+error. Running the balancer to convergence makes it conservative **and** consistent, after which the
+**converged base operator beats Tempest on all v20b directions** (finest-grid ratios 0.29–0.57×),
+with conservation intact (~10⁻⁹). The reverse-to-CS "failure" was a Sinkhorn under-convergence
+artifact. With the converged base, the iterative **corrector no longer helps** (it was trained
+against the under-converged operator). See `SINKHORN_CONVERGENCE.md`.
 
 Caveats and open items: metrics are agreement-with-Tempest, not accuracy against truth (the
 refinement-convergence study has the accuracy view); held-out evidence is a single pair, single seed,
