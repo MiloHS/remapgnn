@@ -87,7 +87,8 @@ Base trained at increasing diversity (D2={CS,ICOD}, D3={+RLL}, D5={+ICO,+MPAS}),
 | D5 {+ICO,+MPAS}  | **0.0949** | **0.0549** | — |
 
 → **Even a 2-family model zero-shots to an unseen family at ~1.25× first-order TR.** Training diversity
-improves it (HEALPix −5%, CSRR −12%, monotonic; D5 seed std 3e-4 vs D2 1.1e-3 ⇒ >3σ separation) **when
+improves it (HEALPix −5% D2→D5, monotonic 0.0998→0.0959→0.0949, D5 seed std 3e-4 vs D2 1.1e-3 ⇒ >3σ
+separation; CSRR −12% D2→D5 but with a within-noise D3 uptick, D3 seed std ±0.0056) **when
 each family is adequately trained** (100 epochs). Under a *fixed total-step budget* (volume-controlled),
 the benefit is masked (D5 → 0.1020) because spreading the budget across 25 pairs under-trains each —
 an honest nuance: diversity pays off given sufficient training budget, not for free.
