@@ -24,6 +24,7 @@ from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights, 
 from train_config_balanced_harmonic import (
     set_seed,
     build_harmonic_fields,
+    build_harmonic_fields_with_truth,
     harmonic_loss_from_operator,
     model_outputs_to_q,
     warn_split_leakage,
@@ -309,16 +310,19 @@ def rollout_irno_corrector(
             S_new, S_true, edge_exists, lambda_neg_s=lambda_neg_s
         )
 
-        fields = harmonic_cache_for_pair[int(lmax)].to(S_new.device, dtype=S_new.dtype)
+        src_f, tgt_f = harmonic_cache_for_pair[int(lmax)]
+        src_f = src_f.to(S_new.device, dtype=S_new.dtype)
+        tgt_f = tgt_f.to(S_new.device, dtype=S_new.dtype) if tgt_f is not None else None
         h_loss_k, h_rel_k = harmonic_loss_from_operator(
             S_pred=S_new,
             S_true=S_true,
             src_index=src_index,
             tgt_index=tgt_index,
             edge_exists=edge_exists,
-            harmonic_fields=fields,
+            harmonic_fields=src_f,
             n_tgt=n_tgt,
             max_fields_per_step=max_fields_per_step,
+            target_fields=tgt_f,
         )
 
         scale = torch.clamp(torch.mean(S_true[edge_exists > 0.5] ** 2), min=1.0e-20)
@@ -356,16 +360,19 @@ def rollout_irno_corrector(
     )
 
     final_lmax = int(bands[-1])
-    final_fields = harmonic_cache_for_pair[final_lmax].to(last_S.device, dtype=last_S.dtype)
+    final_src, final_tgt = harmonic_cache_for_pair[final_lmax]
+    final_src = final_src.to(last_S.device, dtype=last_S.dtype)
+    final_tgt = final_tgt.to(last_S.device, dtype=last_S.dtype) if final_tgt is not None else None
     final_h_loss, final_h_rel = harmonic_loss_from_operator(
         S_pred=last_S,
         S_true=S_true,
         src_index=src_index,
         tgt_index=tgt_index,
         edge_exists=edge_exists,
-        harmonic_fields=final_fields,
+        harmonic_fields=final_src,
         n_tgt=n_tgt,
         max_fields_per_step=0,  # all final-band fields for diagnostics
+        target_fields=final_tgt,
     )
 
     metrics = {
@@ -459,28 +466,35 @@ def eval_pair_set(base_model, corrector, cfg, pairs, stats, harmonic_cache, devi
     return rows
 
 
-def build_harmonic_cache(cfg, pairs, stats, bands, modes_per_degree, seed):
+def build_harmonic_cache(cfg, pairs, stats, bands, modes_per_degree, seed, truth_target=False):
+    # Each cache entry is a (src_fields, tgt_truth_fields) tuple. tgt_truth_fields is None unless
+    # truth_target=True, in which case the spectral loss targets analytic truth on the target grid
+    # (ground truth) instead of TempestRemap's action.
     cache = {}
     unique_bands = sorted(set(int(b) for b in bands))
 
     for pair in pairs:
         tmp = load_pair_tensors(cfg, pair, stats, device=torch.device("cpu"))
         n_src = as_int(tmp["n_src"])
+        n_tgt = as_int(tmp["n_tgt"])
         del tmp
 
         cache[pair] = {}
         for lmax in unique_bands:
             degrees = [0, 1, 2, 4, 8, 12, 16, 24, 32]
             degrees = [d for d in degrees if d <= lmax]
-            fields = build_harmonic_fields(
-                cfg=cfg,
-                pair=pair,
-                n_src=n_src,
-                degrees=degrees,
-                modes_per_degree=modes_per_degree,
-                seed=seed,
-            )
-            cache[pair][int(lmax)] = fields
+            if truth_target:
+                src_f, tgt_f = build_harmonic_fields_with_truth(
+                    cfg=cfg, pair=pair, n_src=n_src, n_tgt=n_tgt,
+                    degrees=degrees, modes_per_degree=modes_per_degree, seed=seed,
+                )
+            else:
+                src_f = build_harmonic_fields(
+                    cfg=cfg, pair=pair, n_src=n_src,
+                    degrees=degrees, modes_per_degree=modes_per_degree, seed=seed,
+                )
+                tgt_f = None
+            cache[pair][int(lmax)] = (src_f, tgt_f)
 
     return cache
 
@@ -578,6 +592,9 @@ def main():
         "n_train_iter": int(irno.get("sinkhorn_iters_train", tr.get("sinkhorn_iters_train", 30))),
         "n_eval_iter": int(irno.get("sinkhorn_iters_eval", tr.get("sinkhorn_iters_eval", 300))),
         "max_fields_per_step": int(irno.get("max_fields_per_step", 8)),
+        # "tempest" (default, legacy) = spectral loss matches Tempest's action; "truth" = matches analytic
+        # ground truth on the target grid (won't regress low-l where the base already beats Tempest).
+        "harmonic_target": str(irno.get("harmonic_target", "tempest")),
     }
 
     epochs = int(args.epochs or tr.get("epochs", 80))
@@ -647,6 +664,7 @@ def main():
         bands=params["bands"],
         modes_per_degree=params["modes_per_degree"],
         seed=seed,
+        truth_target=(params["harmonic_target"] == "truth"),
     )
 
     model_out = cfg.model_path

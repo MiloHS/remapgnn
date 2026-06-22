@@ -369,51 +369,46 @@ class GatedHybridAttentionGNNSinkhorn(HybridAttentionGNNSinkhorn):
         edge_h = self.edge_encoder(edge_attr)
 
         num_edges = edge_h.shape[0]
-
-        # 1. Stable mean source -> target context.
-        msg_st = self.src_to_tgt_msg(torch.cat([src_h[src_index], edge_h], dim=1))
-        mean_context = scatter_sum_torch(msg_st, tgt_index, n_tgt)
         deg_t = scatter_sum_torch(torch.ones_like(tgt_index, dtype=torch.float32), tgt_index, n_tgt)
-        mean_context = mean_context / torch.clamp(deg_t[:, None], min=1.0)
-
-        # 2. Real target-wise source attention context.
-        attn_logits = []
-        attn_values = []
-
-        for start in range(0, num_edges, self.decoder_chunk_size):
-            end = min(start + self.decoder_chunk_size, num_edges)
-
-            s_idx = src_index[start:end]
-            t_idx = tgt_index[start:end]
-            e_h = edge_h[start:end]
-
-            score_in = torch.cat([tgt_h[t_idx], src_h[s_idx], e_h], dim=1)
-            value_in = torch.cat([src_h[s_idx], e_h], dim=1)
-
-            attn_logits.append(self.attn_score(score_in).squeeze(-1))
-            attn_values.append(self.attn_value(value_in))
-
-        attn_logits = torch.cat(attn_logits, dim=0)
-        attn_values = torch.cat(attn_values, dim=0)
-
-        attn = self.edge_softmax_by_target(attn_logits, tgt_index, n_tgt)
-        weighted_values = attn_values * attn.to(attn_values.dtype)[:, None]
-        attn_context = scatter_sum_torch(weighted_values, tgt_index, n_tgt)
-
-        # 3. Gated hybrid context.
-        gate = torch.sigmoid(self.context_gate(torch.cat([tgt_h, mean_context, attn_context], dim=1)))
-        gated_context = gate * attn_context + (1.0 - gate) * mean_context
-
-        tgt_h2 = self.tgt_update(torch.cat([tgt_h, gated_context], dim=1))
-
-        # 4. Reverse target -> source pass.
-        msg_ts = self.tgt_to_src_msg(torch.cat([tgt_h2[tgt_index], edge_h], dim=1))
-        agg_s = scatter_sum_torch(msg_ts, src_index, n_src)
         deg_s = scatter_sum_torch(torch.ones_like(src_index, dtype=torch.float32), src_index, n_src)
-        agg_s = agg_s / torch.clamp(deg_s[:, None], min=1.0)
-        src_h2 = self.src_update(torch.cat([src_h, agg_s], dim=1))
 
-        return self._decode_edges(src_h2, tgt_h2, edge_h, src_index, tgt_index)
+        # num_rounds (default 1 = original single-round behavior). >1 enlarges the receptive field via
+        # weight-shared repetition of the src<->tgt message-passing block (no extra params) -- needed for
+        # the wider stencil of higher-order (gradient/tesseral) operators.
+        rounds = max(1, int(getattr(self, "num_rounds", 1)))
+        for _ in range(rounds):
+            # 1. Stable mean source -> target context.
+            msg_st = self.src_to_tgt_msg(torch.cat([src_h[src_index], edge_h], dim=1))
+            mean_context = scatter_sum_torch(msg_st, tgt_index, n_tgt) / torch.clamp(deg_t[:, None], min=1.0)
+
+            # 2. Real target-wise source attention context.
+            attn_logits = []
+            attn_values = []
+            for start in range(0, num_edges, self.decoder_chunk_size):
+                end = min(start + self.decoder_chunk_size, num_edges)
+                s_idx = src_index[start:end]
+                t_idx = tgt_index[start:end]
+                e_h = edge_h[start:end]
+                attn_logits.append(self.attn_score(torch.cat([tgt_h[t_idx], src_h[s_idx], e_h], dim=1)).squeeze(-1))
+                attn_values.append(self.attn_value(torch.cat([src_h[s_idx], e_h], dim=1)))
+            attn_logits = torch.cat(attn_logits, dim=0)
+            attn_values = torch.cat(attn_values, dim=0)
+            attn = self.edge_softmax_by_target(attn_logits, tgt_index, n_tgt)
+            attn_context = scatter_sum_torch(attn_values * attn.to(attn_values.dtype)[:, None], tgt_index, n_tgt)
+
+            # 3. Gated hybrid context.
+            gate = torch.sigmoid(self.context_gate(torch.cat([tgt_h, mean_context, attn_context], dim=1)))
+            gated_context = gate * attn_context + (1.0 - gate) * mean_context
+            tgt_h2 = self.tgt_update(torch.cat([tgt_h, gated_context], dim=1))
+
+            # 4. Reverse target -> source pass.
+            msg_ts = self.tgt_to_src_msg(torch.cat([tgt_h2[tgt_index], edge_h], dim=1))
+            agg_s = scatter_sum_torch(msg_ts, src_index, n_src) / torch.clamp(deg_s[:, None], min=1.0)
+            src_h2 = self.src_update(torch.cat([src_h, agg_s], dim=1))
+
+            src_h, tgt_h = src_h2, tgt_h2
+
+        return self._decode_edges(src_h, tgt_h, edge_h, src_index, tgt_index)
 
 
 class ResidualGatedHybridAttentionGNNSinkhorn(HybridAttentionGNNSinkhorn):
