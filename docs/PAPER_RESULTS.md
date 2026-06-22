@@ -50,25 +50,31 @@ Forward+Sinkhorn only (excluding kNN prep): **20–31×**. Multi-pair GPU throug
 structural reason it holds on any hardware: TR is serial-CPU and cannot parallelize to GPU, while ours
 is data-parallel. On equal CPU footing ours is ~parity with TR; the speedup comes from GPU portability.
 
-## Table 3 — Accuracy vs first-order TempestRemap (vs analytic truth, broad spectrum)
-v20b diverse base, SOR-converged operator. Ratio aggregated over {x, smooth1, Y_4, Y_8, Y_16, Y_24
-incl. tesseral}; const sentinel excluded.
+## Table 3 — Accuracy vs first-order TempestRemap (vs analytic truth)
+v20b diverse base, SOR-converged operator, at r64 (CS↔ICOD) / RLL r90-180 (CS↔RLL). Reported as
+**ratio-of-means** (total error norm; reconciles with the err columns) over a uniform test spectrum
+{x, smooth1, Y_4, Y_8, Y_16, Y_24 incl. tesseral}; const sentinel excluded.
 
-| Direction | our err | TR err | ratio |
+| Direction | our err | TR err | ratio (of means) |
 |---|---|---|---|
-| CS→ICOD (r64)  | 1.74e-2 | 2.50e-2 | 0.64 |
-| ICOD→CS (r64)  | 1.73e-2 | 1.43e-2 | 1.00 |
-| CS→RLL         | 2.63e-1 | 2.65e-1 | 0.94 |
-| RLL→CS         | 1.78e-1 | 1.79e-1 | 0.95 |
-| **mean** |  |  | **0.88** |
+| CS→ICOD (r64)  | 1.74e-2 | 2.50e-2 | **0.69** |
+| ICOD→CS (r64)  | 1.73e-2 | 1.43e-2 | **1.21** |
+| CS→RLL         | 2.63e-1 | 2.65e-1 | **0.99** |
+| RLL→CS         | 1.78e-1 | 1.79e-1 | **1.00** |
+| **overall** |  |  | **0.99** |
 
-→ **Matches or beats first-order TR on every direction, ~12% lower error on average.**
+Per-degree (ratio-of-means, avg over directions): deg≤1 (smooth/large-scale) **0.67–0.71**; deg 4–24 **0.97–1.00**.
+
+→ **At parity with first-order TR overall (0.99×), ~30% better on smooth/large-scale fields (deg≤1),
+comparable at higher degree, slightly worse on ICOD→CS (1.21)** — at 16–20× the speed.
 Conservation residual ~1e-9, consistency (row-sum) residual ~1e-6, by construction.
 
-> CAVEAT: an earlier internal number ("CS→ICOD 0.29", 3× better) was a **favorable subset**
-> (smooth functions only, finest grid). Do **not** use 0.29 in the abstract. The honest broad-spectrum
-> figure is **0.88**. A scoped secondary claim ("up to ~3× better on smooth fields at high resolution")
-> is possible but must be re-verified before use.
+> METRIC NOTE (important for honesty): an alternative aggregation — *mean of per-function ratios* —
+> gives 0.88, but it over-weights low-error functions, so we report **ratio-of-means (total error)** as
+> primary. An earlier internal "CS→ICOD 0.29 (3× better)" used BOTH a favorable subset (smooth functions
+> only, finest grid) AND the mean-of-ratios aggregation — do **not** use it. The honest accuracy story is
+> "**parity overall, better on smooth/large-scale fields**"; the paper's headline is SPEED + topology
+> generalization, with accuracy at parity (not a win over TR).
 
 ## Table 4 — Zero-shot topology generalization (held-out families, vs analytic truth)
 Base trained at increasing diversity (D2={CS,ICOD}, D3={+RLL}, D5={+ICO,+MPAS}), 3 seeds, then evaluated
