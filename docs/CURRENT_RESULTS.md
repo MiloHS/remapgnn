@@ -21,7 +21,9 @@ new `np2` Tempest maps/supermeshes at r32/r64.
 
 ## Accuracy/conservation headline
 
-Source: [`v12_expanded_realfields_nonico_f64_proj800_eps12`](../analysis_medium_improv/audits/v12_expanded_realfields_nonico_f64_proj800_eps12/summary.md)
+Source audit: `analysis_medium_improv/audits/v12_expanded_realfields_nonico_f64_proj800_eps12/`.
+Generated audit outputs are not tracked in the cleaned GitHub repo; this table
+copies the key public numbers.
 
 | operator | real mean rel-L2 | analytic mean rel-L2 | spectral mean rel-L2 | max conservation residual |
 | --- | ---: | ---: | ---: | ---: |
@@ -52,12 +54,12 @@ Interpretation: `v12_geom_base` is the structurally cleanest learned candidate.
 
 ## Efficiency headline
 
-Sources:
+Source benchmarks, local/generated:
 
-- [`v12_clean_projection`](../analysis_medium_improv/benchmarks/v12_clean_projection/summary.md)
-- [`tempest_generation_nonico`](../analysis_medium_improv/benchmarks/tempest_generation_nonico/summary.md)
-- [`v12_clean_projection_r64`](../analysis_medium_improv/benchmarks/v12_clean_projection_r64/summary.md)
-- [`tempest_generation_r64`](../analysis_medium_improv/benchmarks/tempest_generation_r64/summary.md)
+- `analysis_medium_improv/benchmarks/v12_clean_projection/`
+- `analysis_medium_improv/benchmarks/tempest_generation_nonico/`
+- `analysis_medium_improv/benchmarks/v12_clean_projection_r64/`
+- `analysis_medium_improv/benchmarks/tempest_generation_r64/`
 
 | resolution/pairs | learned build only | learned input+build | Tempest `np2` generation | build-only speedup | input+build speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -83,4 +85,3 @@ Avoid:
 > The learned operator beats TempestRemap.
 
 That is not supported by the current accuracy or cached-map timing results.
-

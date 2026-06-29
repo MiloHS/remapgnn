@@ -1,51 +1,120 @@
-# Model lineage
+# Model lineage and lessons learned
 
-This document summarizes the evolution of the learned conservative remapping models.
+This document is the compact public history of the RemapGNN experiments.  It
+keeps the ideas that matter without carrying every old sweep, log, and negative
+result into the GitHub-facing repo.
 
-## Goal
+## Current default
 
-Approximate TempestRemap conservative remapping operators using a sparse learned GNN + Sinkhorn operator.
+The current default is:
 
-The learned model predicts positive scores on a fixed source-target candidate edge graph. A sparse Sinkhorn balancing step converts these scores into a conservative remapping mass matrix, preserving the remapping structure while enforcing conservation constraints.
+- model: `v12_geom_base`
+- checkpoint: `models_medium_improv/highorder_signed_v12_geom_mom1e4.pt`
+- config: `configs/v20b_base_a3p0_mink8_geom_v12.json`
+- inference projection: float64, `eps_rel=1e-12`, `n_cg=800`
 
-## Main versions
+This is the version documented in `docs/INFERENCE.md`.
 
-| Version | Main idea | Outcome |
-|---|---|---|
-| v8 | Mean GNN baseline | Matched the sklearn baseline but did not clearly improve it. |
-| v10 | Hybrid attention GNN | Improved multi-pair average and became the first strong neural baseline. |
-| v11 | Gated hybrid attention | Slightly improved average accuracy and made attention more stable. |
-| v15 | v11 + spherical harmonic loss up to l=16 | Introduced spectral supervision; modest improvement. |
-| v16 | v11 + spherical harmonic loss up to l=24 | Best single-pass model; improved field and spectral errors. |
-| v17 | More harmonic m-modes per degree | Improved some worst-case spectral errors, but slightly hurt average field accuracy. |
-| v18 | IRNO-style iterative corrector from frozen v16 | Best overall result. Monotonic field and spectral improvement across correction steps. |
-| v19 | Gentler v18 ablation with smaller update and stronger keep-close | Stable but did not beat v18 seed123. Useful ablation. |
+## Main technical shift
 
-## Current best model
+The project started with nonnegative GNN/Sinkhorn remapping operators.  Those
+were useful as first conservative neural baselines, but they are structurally
+limited: a nonnegative conservative linear operator is monotone, and monotone
+conservative remapping is effectively first-order limited.
 
-`v18_irno_corrector_from_v16_l24_a2p0_mink8`
+The current direction uses:
 
-This model freezes the v16 conservative remapper and trains a shared conditional GNN corrector. The corrector is applied progressively with spectral-band conditioning:
+- signed learned edge masses;
+- a doubly constrained projection layer instead of Sinkhorn;
+- geometric features derived from centers, areas, local tangent coordinates,
+  and candidate-graph statistics;
+- float64 projection at inference for clean conservation.
 
-1. base v16 operator
-2. correction conditioned on lmax=8
-3. correction conditioned on lmax=16
-4. correction conditioned on lmax=24
+That combination is the core of `v12_geom_base`.
 
-After every correction, sparse Sinkhorn balancing is applied again to preserve conservative structure.
+## What worked
 
-## Meaning of lmax
+### Signed weights + projection
 
-`lmax` is the maximum spherical harmonic degree included in that correction step.
+Allowing signed edge masses was the important high-order step.  The projection
+then enforces the two remapping constraints:
 
-A spherical harmonic mode is denoted `Y_lm`, where:
+- source marginal / conservation;
+- target marginal / constant consistency.
 
-- `l` is the degree, corresponding to spatial frequency / scale.
-- `m` is the order, corresponding to orientation or azimuthal structure within that degree.
+The cleaned float64 projection is what brings learned conservation residuals to
+about `2e-9` in the current audit.
 
-The bands are cumulative:
+### Geometry features
 
-- `lmax=8` means modes with degree `l <= 8`
-- `lmax=16` means modes with degree `l <= 16`
-- `lmax=24` means modes with degree `l <= 24`
+The v12 geometry features helped the learned model become more structurally
+reasonable.  They improved real-field behavior and moment diagnostics compared
+with earlier learned baselines.
 
+### Real-field and moment audits
+
+The useful evaluation suite is not only field relative error.  The current
+audit checks:
+
+- real climate-like fields;
+- analytic fields;
+- spectral shells;
+- conservation and consistency residuals;
+- Cartesian order-1/order-2 moment diagnostics;
+- deployment timing.
+
+Those audits are what make the current result defensible.
+
+### Supermesh-free operator construction
+
+The learned operator does not beat cached TempestRemap maps.  Its useful
+efficiency story is different: it can construct a new conservative operator
+faster than the tested TempestRemap `np2` overlap/offline-map generation path.
+
+## What did not work well
+
+### Iterative correctors as the main answer
+
+The earlier v18/v10b-style corrector idea improved some in-sample or spectral
+metrics, but it did not become the clean default.  The improvements were not
+robust enough on real fields and moment diagnostics, and wider/more aggressive
+correctors often gave back structural quality.
+
+The lesson was: keep the useful evaluation discipline from the corrector work,
+but do not make the corrector the headline model.
+
+### More bands / wider correction stencils
+
+Training on more spectral bands and using larger candidate stencils was a good
+hypothesis, but the tested wide-stencil 6-band direction was not an improvement
+overall.  It helped some spectral/analytic numbers but hurt the default
+real-field/moment tradeoff.
+
+### Claiming superiority over TempestRemap
+
+That is not supported.  TempestRemap `np2` is still more accurate in the current
+audit, and cached Tempest maps are still faster to load/apply.  The honest claim
+is supermesh-free learned construction with good conservation and reasonable
+accuracy.
+
+## Current result in one paragraph
+
+`v12_geom_base` with cleaned float64 projection is the current public prototype.
+It is not as accurate as TempestRemap `np2`, but it is much better than `np1`,
+better than earlier learned baselines on real fields, conservative to about
+`2e-9`, and faster than generating new TempestRemap `np2` maps/supermeshes at
+the tested r32/r64 resolutions.
+
+See `docs/CURRENT_RESULTS.md` for the exact numbers.
+
+## Good next steps
+
+The most useful next work is tool hardening, not another speculative model
+sweep:
+
+1. publish the v12 checkpoint as a GitHub release asset;
+2. test `scripts/build_remap_operator.py` on a fresh mesh pair outside the
+   original audit set;
+3. add a tiny example dataset or synthetic mesh fixture for CI/smoke tests;
+4. reduce the remaining helper-script coupling by moving shared utilities from
+   `scripts/` into the `remapgnn/` package.

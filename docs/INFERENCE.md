@@ -12,7 +12,7 @@ Current default:
 - projection: float64, `eps_rel=1e-12`, `n_cg=800`
 
 The old GitHub release contains a v18 corrector model.  That release is useful
-history, but the current documented path below expects a new v12 weight release.
+history, but this cleaned branch documents the current v12 path only.
 
 ## Install
 
@@ -91,8 +91,8 @@ python scripts/build_external_kdist_graph.py \
   --tgt-mesh my_data/target_mesh.nc \
   --src-name MY-SOURCE \
   --tgt-name MY-TARGET \
-  --out work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
-  --alpha 2.0 \
+  --out work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a3p0_mink8.parquet \
+  --alpha 3.0 \
   --min-k 8 \
   --max-k 256 \
   --normalize-area-sums
@@ -112,7 +112,7 @@ source cells cannot be conserved by any sparse operator on that graph.
 python scripts/build_remap_operator.py \
   --config configs/v20b_base_a3p0_mink8_geom_v12.json \
   --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
-  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a3p0_mink8.parquet \
   --pair MY-SOURCE_to_MY-TARGET \
   --out-map outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12.nc \
   --summary-json outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12_summary.json \
@@ -156,7 +156,7 @@ If your source field file has a variable named `temperature`:
 python scripts/build_remap_operator.py \
   --config configs/v20b_base_a3p0_mink8_geom_v12.json \
   --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
-  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a3p0_mink8.parquet \
   --pair MY-SOURCE_to_MY-TARGET \
   --out-map outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12.nc \
   --src-field-nc my_data/source_field.nc \
@@ -195,12 +195,6 @@ python scripts/visualize_remap_output.py \
 
 ## Legacy v18 release
 
-The old release asset for `v18_irno_corrector_from_v16_l24_a2p0_mink8` used the
-legacy script:
-
-```bash
-python scripts/infer_prepared_pair.py ...
-```
-
-That path is kept for reproducibility of the old release, but it is not the
-current recommended model/tool path.
+The old v18 release is retained on GitHub as historical context, but the cleaned
+repo no longer carries the v18-specific inference path.  Use the current v12
+release and `scripts/build_remap_operator.py` for new tests.
