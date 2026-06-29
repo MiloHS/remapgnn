@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from remapgnn.config import load_config
 from remapgnn.data import compute_feature_stats, load_pair_tensors, get_feature_lists
 from remapgnn.models import build_model
-from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
+from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights, converged_balance
 
 
 def set_seed(seed: int) -> None:
@@ -124,7 +124,7 @@ def xyz_to_angles(xyz: np.ndarray):
     return theta, phi
 
 
-def real_spherical_harmonic(l: int, m: int, xyz: np.ndarray) -> np.ndarray:
+def _real_sph_unnorm(l: int, m: int, xyz: np.ndarray) -> np.ndarray:
     theta, phi = xyz_to_angles(xyz)
 
     if m == 0:
@@ -135,7 +135,11 @@ def real_spherical_harmonic(l: int, m: int, xyz: np.ndarray) -> np.ndarray:
         mp = abs(m)
         y = np.sqrt(2.0) * ((-1.0) ** mp) * SPH(l, mp, theta, phi).imag
 
-    y = np.asarray(y, dtype=np.float64)
+    return np.asarray(y, dtype=np.float64)
+
+
+def real_spherical_harmonic(l: int, m: int, xyz: np.ndarray) -> np.ndarray:
+    y = _real_sph_unnorm(l, m, xyz)
     norm = np.sqrt(np.mean(y * y))
     if norm > 0:
         y = y / norm
@@ -172,6 +176,45 @@ def build_harmonic_fields(cfg, pair: str, n_src: int, degrees, modes_per_degree:
     arr = np.stack(fields, axis=0).astype("float32")
     print(f"  harmonic cache {pair}: {arr.shape[0]} fields, degrees={degrees}")
     return torch.from_numpy(arr)
+
+
+def read_target_xyz_from_edges(edge_path: Path, n_tgt: int) -> np.ndarray:
+    df = pd.read_parquet(edge_path, columns=["target_index", "tgt_x", "tgt_y", "tgt_z"])
+    g = df.groupby("target_index", sort=False)[["tgt_x", "tgt_y", "tgt_z"]].first()
+    xyz = np.full((n_tgt, 3), np.nan, dtype=np.float64)
+    idx = g.index.to_numpy(dtype=np.int64)
+    xyz[idx] = g.to_numpy(dtype=np.float64)
+    if np.isnan(xyz).any():
+        missing = np.where(np.isnan(xyz[:, 0]))[0][:10]
+        raise RuntimeError(f"Missing target coordinates, first few: {missing}")
+    return xyz
+
+
+def build_harmonic_fields_with_truth(cfg, pair: str, n_src: int, n_tgt: int, degrees, modes_per_degree: int, seed: int):
+    """Source harmonic fields AND their analytic truth on the TARGET grid, sharing the SAME (l,m) and the
+    SAME normalization (unit-RMS on the SOURCE grid). So tgt_truth is the exact remap of the source field
+    (the continuous harmonic whose source restriction is the source field), enabling a truth-targeted
+    spectral loss instead of a Tempest-targeted one."""
+    rng = np.random.default_rng(seed + _stable_pair_seed(pair) % 1000000)
+    src_xyz = read_source_xyz_from_edges(cfg.edge_path(pair), n_src=n_src)
+    tgt_xyz = read_target_xyz_from_edges(cfg.edge_path(pair), n_tgt=n_tgt)
+
+    src_fields, tgt_fields = [], []
+    for l in degrees:
+        for m in choose_m_values(l, modes_per_degree, rng):
+            ys = _real_sph_unnorm(l, m, src_xyz)
+            yt = _real_sph_unnorm(l, m, tgt_xyz)
+            norm = np.sqrt(np.mean(ys * ys))  # normalize BOTH by the source RMS
+            if norm > 0:
+                ys = ys / norm
+                yt = yt / norm
+            src_fields.append(ys.astype("float32"))
+            tgt_fields.append(yt.astype("float32"))
+
+    s = np.stack(src_fields, axis=0).astype("float32")
+    t = np.stack(tgt_fields, axis=0).astype("float32")
+    print(f"  harmonic+truth cache {pair}: {s.shape[0]} fields, degrees={degrees}")
+    return torch.from_numpy(s), torch.from_numpy(t)
 
 
 def model_outputs_to_q(out):
@@ -216,13 +259,20 @@ def harmonic_loss_from_operator(
     max_fields_per_step: int,
     rng_state: torch.Generator | None = None,
     eps: float = 1.0e-20,
+    target_fields: torch.Tensor | None = None,
 ):
+    # target_fields (optional): analytic truth of each harmonic on the TARGET grid [F, n_tgt]. When given,
+    # the spectral loss targets GROUND TRUTH (operator should reproduce the true remapped field) instead of
+    # TempestRemap's action (S_true) -- so it won't pull the operator back toward Tempest where the base is
+    # already more accurate, and it lets the operator try to beat Tempest. When None: legacy Tempest target.
     n_fields = harmonic_fields.shape[0]
     if max_fields_per_step > 0 and n_fields > max_fields_per_step:
-        perm = torch.randperm(n_fields, device=harmonic_fields.device, generator=rng_state)
-        fields = harmonic_fields[perm[:max_fields_per_step]]
+        perm = torch.randperm(n_fields, device=harmonic_fields.device, generator=rng_state)[:max_fields_per_step]
+        fields = harmonic_fields[perm]
+        tfields = target_fields[perm] if target_fields is not None else None
     else:
         fields = harmonic_fields
+        tfields = target_fields
 
     x_edge = fields[:, src_index]  # [F, E]
 
@@ -232,12 +282,15 @@ def harmonic_loss_from_operator(
         n_tgt,
     )
 
-    pos = edge_exists > 0.5
-    y_true = scatter_fields_to_target(
-        S_true[pos][None, :] * x_edge[:, pos],
-        tgt_index[pos],
-        n_tgt,
-    )
+    if tfields is not None:
+        y_true = tfields  # analytic truth on the target grid [F, n_tgt]
+    else:
+        pos = edge_exists > 0.5
+        y_true = scatter_fields_to_target(
+            S_true[pos][None, :] * x_edge[:, pos],
+            tgt_index[pos],
+            n_tgt,
+        )
 
     rel2 = ((y_pred - y_true) ** 2).sum(dim=1) / torch.clamp((y_true ** 2).sum(dim=1), min=eps)
     rel = torch.sqrt(torch.clamp(rel2, min=0.0))
@@ -281,6 +334,8 @@ def pair_loss_with_harmonics(
     lambda_bce: float,
     lambda_field: float,
     max_fields_per_step: int,
+    scale_cache: dict | None = None,
+    pair_key: str | None = None,
 ):
     src_index = batch["src_index"]
     tgt_index = batch["tgt_index"]
@@ -304,7 +359,12 @@ def pair_loss_with_harmonics(
     edge_logit, raw_weight, q = model_outputs_to_q(out)
     q = q.float()
 
-    M = sparse_sinkhorn_balance(
+    # Balance to CONVERGENCE (conservative AND consistent) via the frozen-dual gradient, instead of
+    # a fixed under-converged unroll. `n_sinkhorn_iter` is the max-iter cap. When a scale_cache is
+    # supplied, warm-start from this pair's previous-step converged duals (identical fixed point,
+    # far fewer iters since the model moves only one optimizer step between visits).
+    warm_scale = scale_cache.get(pair_key) if (scale_cache is not None and pair_key is not None) else None
+    M, s_conv = converged_balance(
         q=q,
         src_index=src_index,
         tgt_index=tgt_index,
@@ -312,8 +372,13 @@ def pair_loss_with_harmonics(
         area_tgt=area_tgt,
         n_src=n_src,
         n_tgt=n_tgt,
-        n_iter=n_sinkhorn_iter,
+        tol=1.0e-6,
+        max_iter=max(int(n_sinkhorn_iter), 20000),
+        warm_scale=warm_scale,
+        return_scale=True,
     )
+    if scale_cache is not None and pair_key is not None:
+        scale_cache[pair_key] = s_conv
 
     S_pred = sparse_operator_weights(
         M=M,
@@ -636,6 +701,9 @@ def main():
     best_epoch = None
     best_pack = None
 
+    # Per-pair converged-dual cache: warm-start each pair's Sinkhorn from its previous-step duals.
+    scale_cache = {}
+
     for epoch in range(1, epochs + 1):
         epoch_train_pairs = list(train_pairs)
         np.random.shuffle(epoch_train_pairs)
@@ -657,6 +725,8 @@ def main():
                 lambda_bce=lambdas["lambda_bce"],
                 lambda_field=harmonic_cfg["lambda_field"],
                 max_fields_per_step=harmonic_cfg["max_fields_per_step"],
+                scale_cache=scale_cache,
+                pair_key=pair,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

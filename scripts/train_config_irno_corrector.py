@@ -18,12 +18,13 @@ if str(ROOT / "scripts") not in sys.path:
 from remapgnn.config import load_config
 from remapgnn.data import load_pair_tensors, get_feature_lists
 from remapgnn.models import build_model
-from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights
+from remapgnn.sinkhorn import sparse_sinkhorn_balance, sparse_operator_weights, converged_balance
 
 # Reuse harmonic utilities from the previous trainer.
 from train_config_balanced_harmonic import (
     set_seed,
     build_harmonic_fields,
+    build_harmonic_fields_with_truth,
     harmonic_loss_from_operator,
     model_outputs_to_q,
     warn_split_leakage,
@@ -111,9 +112,15 @@ def compute_operator_from_logq(
     n_src: int,
     n_tgt: int,
     n_iter: int,
+    warm_scale: torch.Tensor | None = None,
+    return_scale: bool = False,
 ):
     q = torch.exp(torch.clamp(logq.float(), min=-60.0, max=40.0))
-    M = sparse_sinkhorn_balance(
+    # Train the corrector against a CONVERGED operator (conservative + consistent) using a
+    # frozen-dual gradient, instead of a fixed under-converged unroll. `n_iter` is the max-iter cap.
+    # warm_scale reuses the previous band/step's converged duals to converge in far fewer iters
+    # (identical fixed point). return_scale yields that scale for the next warm start.
+    out = converged_balance(
         q=q,
         src_index=src_index,
         tgt_index=tgt_index,
@@ -121,8 +128,16 @@ def compute_operator_from_logq(
         area_tgt=area_tgt.float(),
         n_src=n_src,
         n_tgt=n_tgt,
-        n_iter=n_iter,
+        tol=1.0e-6,
+        max_iter=max(int(n_iter), 20000),
+        warm_scale=warm_scale,
+        return_scale=return_scale,
     )
+    if return_scale:
+        M, s = out
+        S = sparse_operator_weights(M=M, tgt_index=tgt_index, area_tgt=area_tgt.float())
+        return M, S, s
+    M = out
     S = sparse_operator_weights(M=M, tgt_index=tgt_index, area_tgt=area_tgt.float())
     return M, S
 
@@ -201,6 +216,8 @@ def rollout_irno_corrector(
     lambda_delta: float,
     lambda_neg_s: float,
     max_fields_per_step: int,
+    pair_key: str | None = None,
+    base_op_cache: dict | None = None,
 ):
     src_index = batch["src_index"]
     tgt_index = batch["tgt_index"]
@@ -212,27 +229,42 @@ def rollout_irno_corrector(
     n_src = as_int(batch["n_src"])
     n_tgt = as_int(batch["n_tgt"])
 
-    with torch.no_grad():
-        q0 = base_q_from_model(base_model, batch)
-        M0, S0 = compute_operator_from_logq(
-            torch.log(torch.clamp(q0, min=1.0e-30)),
-            src_index,
-            tgt_index,
-            area_src,
-            area_tgt,
-            n_src,
-            n_tgt,
-            n_sinkhorn_iter,
-        )
+    # The base model is FROZEN, so its q0 and converged operator (M0, S0) are constant for a given
+    # pair across all epochs -- cache them to skip one converged balance per step. s_base is the
+    # base per-edge scale, reused to warm-start band 1.
+    if base_op_cache is not None and pair_key in base_op_cache:
+        logq, S0, s_base = base_op_cache[pair_key]
+        last_M = None
+    else:
+        with torch.no_grad():
+            q0 = base_q_from_model(base_model, batch)
+            logq0 = torch.log(torch.clamp(q0, min=1.0e-30))
+            M0, S0, s_base = compute_operator_from_logq(
+                logq0,
+                src_index,
+                tgt_index,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                n_sinkhorn_iter,
+                return_scale=True,
+            )
+        logq = logq0.detach()
+        S0 = S0.detach()
+        s_base = s_base.detach()
+        last_M = M0
+        if base_op_cache is not None:
+            base_op_cache[pair_key] = (logq, S0, s_base)
 
-    logq = torch.log(torch.clamp(q0, min=1.0e-30)).detach()
     S_current = S0.detach()
+    s_prev = s_base
 
     total = torch.zeros((), device=src_index.device)
     step_metrics = {}
 
     K = len(bands)
-    last_M, last_S = M0, S0
+    last_S = S0
 
     for k, lmax in enumerate(bands, start=1):
         step_frac = k / max(K, 1)
@@ -260,7 +292,7 @@ def rollout_irno_corrector(
         bounded_delta = torch.tanh(delta)
         logq_new = logq + alpha * bounded_delta
 
-        M_new, S_new = compute_operator_from_logq(
+        M_new, S_new, s_new = compute_operator_from_logq(
             logq_new,
             src_index,
             tgt_index,
@@ -269,22 +301,28 @@ def rollout_irno_corrector(
             n_src,
             n_tgt,
             n_sinkhorn_iter,
+            warm_scale=s_prev,
+            return_scale=True,
         )
+        s_prev = s_new
 
         op_loss_k, op_pos_k, op_neg_k, rel_l2_k = operator_edge_loss(
             S_new, S_true, edge_exists, lambda_neg_s=lambda_neg_s
         )
 
-        fields = harmonic_cache_for_pair[int(lmax)].to(S_new.device, dtype=S_new.dtype)
+        src_f, tgt_f = harmonic_cache_for_pair[int(lmax)]
+        src_f = src_f.to(S_new.device, dtype=S_new.dtype)
+        tgt_f = tgt_f.to(S_new.device, dtype=S_new.dtype) if tgt_f is not None else None
         h_loss_k, h_rel_k = harmonic_loss_from_operator(
             S_pred=S_new,
             S_true=S_true,
             src_index=src_index,
             tgt_index=tgt_index,
             edge_exists=edge_exists,
-            harmonic_fields=fields,
+            harmonic_fields=src_f,
             n_tgt=n_tgt,
             max_fields_per_step=max_fields_per_step,
+            target_fields=tgt_f,
         )
 
         scale = torch.clamp(torch.mean(S_true[edge_exists > 0.5] ** 2), min=1.0e-20)
@@ -322,16 +360,19 @@ def rollout_irno_corrector(
     )
 
     final_lmax = int(bands[-1])
-    final_fields = harmonic_cache_for_pair[final_lmax].to(last_S.device, dtype=last_S.dtype)
+    final_src, final_tgt = harmonic_cache_for_pair[final_lmax]
+    final_src = final_src.to(last_S.device, dtype=last_S.dtype)
+    final_tgt = final_tgt.to(last_S.device, dtype=last_S.dtype) if final_tgt is not None else None
     final_h_loss, final_h_rel = harmonic_loss_from_operator(
         S_pred=last_S,
         S_true=S_true,
         src_index=src_index,
         tgt_index=tgt_index,
         edge_exists=edge_exists,
-        harmonic_fields=final_fields,
+        harmonic_fields=final_src,
         n_tgt=n_tgt,
         max_fields_per_step=0,  # all final-band fields for diagnostics
+        target_fields=final_tgt,
     )
 
     metrics = {
@@ -359,6 +400,7 @@ def eval_one_pair(
     device,
     bands,
     params,
+    base_op_cache=None,
 ):
     base_model.eval()
     corrector.eval()
@@ -381,13 +423,15 @@ def eval_one_pair(
             lambda_delta=params["lambda_delta"],
             lambda_neg_s=params["lambda_neg_s"],
             max_fields_per_step=0,
+            pair_key=pair,
+            base_op_cache=base_op_cache,
         )
 
     del batch
     return metrics
 
 
-def eval_pair_set(base_model, corrector, cfg, pairs, stats, harmonic_cache, device, bands, params, prefix):
+def eval_pair_set(base_model, corrector, cfg, pairs, stats, harmonic_cache, device, bands, params, prefix, base_op_cache=None):
     rows = {}
     rels, rowsums, fields = [], [], []
 
@@ -402,6 +446,7 @@ def eval_pair_set(base_model, corrector, cfg, pairs, stats, harmonic_cache, devi
             device=device,
             bands=bands,
             params=params,
+            base_op_cache=base_op_cache,
         )
 
         tag = safe_pair_name(pair)
@@ -421,28 +466,35 @@ def eval_pair_set(base_model, corrector, cfg, pairs, stats, harmonic_cache, devi
     return rows
 
 
-def build_harmonic_cache(cfg, pairs, stats, bands, modes_per_degree, seed):
+def build_harmonic_cache(cfg, pairs, stats, bands, modes_per_degree, seed, truth_target=False):
+    # Each cache entry is a (src_fields, tgt_truth_fields) tuple. tgt_truth_fields is None unless
+    # truth_target=True, in which case the spectral loss targets analytic truth on the target grid
+    # (ground truth) instead of TempestRemap's action.
     cache = {}
     unique_bands = sorted(set(int(b) for b in bands))
 
     for pair in pairs:
         tmp = load_pair_tensors(cfg, pair, stats, device=torch.device("cpu"))
         n_src = as_int(tmp["n_src"])
+        n_tgt = as_int(tmp["n_tgt"])
         del tmp
 
         cache[pair] = {}
         for lmax in unique_bands:
             degrees = [0, 1, 2, 4, 8, 12, 16, 24, 32]
             degrees = [d for d in degrees if d <= lmax]
-            fields = build_harmonic_fields(
-                cfg=cfg,
-                pair=pair,
-                n_src=n_src,
-                degrees=degrees,
-                modes_per_degree=modes_per_degree,
-                seed=seed,
-            )
-            cache[pair][int(lmax)] = fields
+            if truth_target:
+                src_f, tgt_f = build_harmonic_fields_with_truth(
+                    cfg=cfg, pair=pair, n_src=n_src, n_tgt=n_tgt,
+                    degrees=degrees, modes_per_degree=modes_per_degree, seed=seed,
+                )
+            else:
+                src_f = build_harmonic_fields(
+                    cfg=cfg, pair=pair, n_src=n_src,
+                    degrees=degrees, modes_per_degree=modes_per_degree, seed=seed,
+                )
+                tgt_f = None
+            cache[pair][int(lmax)] = (src_f, tgt_f)
 
     return cache
 
@@ -540,6 +592,9 @@ def main():
         "n_train_iter": int(irno.get("sinkhorn_iters_train", tr.get("sinkhorn_iters_train", 30))),
         "n_eval_iter": int(irno.get("sinkhorn_iters_eval", tr.get("sinkhorn_iters_eval", 300))),
         "max_fields_per_step": int(irno.get("max_fields_per_step", 8)),
+        # "tempest" (default, legacy) = spectral loss matches Tempest's action; "truth" = matches analytic
+        # ground truth on the target grid (won't regress low-l where the base already beats Tempest).
+        "harmonic_target": str(irno.get("harmonic_target", "tempest")),
     }
 
     epochs = int(args.epochs or tr.get("epochs", 80))
@@ -609,6 +664,7 @@ def main():
         bands=params["bands"],
         modes_per_degree=params["modes_per_degree"],
         seed=seed,
+        truth_target=(params["harmonic_target"] == "truth"),
     )
 
     model_out = cfg.model_path
@@ -630,6 +686,9 @@ def main():
     best_pack = None
     history = []
     t0 = time.time()
+
+    # Frozen base -> its converged operator is constant per pair; cache across epochs (train+eval).
+    base_op_cache = {}
 
     for epoch in range(1, epochs + 1):
         epoch_pairs = list(train_pairs)
@@ -658,6 +717,8 @@ def main():
                 lambda_delta=params["lambda_delta"],
                 lambda_neg_s=params["lambda_neg_s"],
                 max_fields_per_step=params["max_fields_per_step"],
+                pair_key=pair,
+                base_op_cache=base_op_cache,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(corrector.parameters(), max_norm=1.0)
@@ -678,6 +739,7 @@ def main():
                 bands=params["bands"],
                 params=params,
                 prefix="ckpt",
+                base_op_cache=base_op_cache,
             )
 
             test_metrics = eval_one_pair(
@@ -690,6 +752,7 @@ def main():
                 device=device,
                 bands=params["bands"],
                 params=params,
+                base_op_cache=base_op_cache,
             )
 
             row = {
