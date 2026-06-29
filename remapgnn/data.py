@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -86,10 +87,182 @@ def add_mesh_condition_columns(df):
         if tgt_family is not None:
             df[f"tgt_mesh_is_{fam}"] = (tgt_family == fam).astype("float32")
 
+    df = add_geometry_feature_columns(df)
     return df
 
 
+SYNTHETIC_GEOMETRY_FEATURES = {
+    "src_h",
+    "tgt_h",
+    "log_src_area",
+    "log_tgt_area",
+    "log_area_ratio_tgt_over_src",
+    "target_candidate_count",
+    "source_candidate_count",
+    "target_candidate_count_log",
+    "source_candidate_count_log",
+    "knn_rank_over_target_count",
+    "tgt_tan_e",
+    "tgt_tan_n",
+    "src_tan_e",
+    "src_tan_n",
+    "tgt_tan_e_over_h_tgt",
+    "tgt_tan_n_over_h_tgt",
+    "tgt_tan_e_over_h_mean",
+    "tgt_tan_n_over_h_mean",
+    "src_tan_e_over_h_src",
+    "src_tan_n_over_h_src",
+    "tan_dist",
+    "tan_dist_over_h_src",
+    "tan_dist_over_h_tgt",
+    "tan_dist_over_h_mean",
+    "tgt_tan_e2_over_h2",
+    "tgt_tan_en_over_h2",
+    "tgt_tan_n2_over_h2",
+}
+
+GEOMETRY_FEATURE_DEPENDENCIES = [
+    "source_index",
+    "target_index",
+    "knn_rank",
+    "src_x",
+    "src_y",
+    "src_z",
+    "tgt_x",
+    "tgt_y",
+    "tgt_z",
+    "src_area",
+    "tgt_area",
+    "area_ratio_tgt_over_src",
+]
+
+MESH_CONDITION_FEATURES = {
+    "src_mesh_is_RLL", "src_mesh_is_CS", "src_mesh_is_ICOD",
+    "tgt_mesh_is_RLL", "tgt_mesh_is_CS", "tgt_mesh_is_ICOD",
+}
+
+
+def _stable_tangent_basis(xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Stable east/north-like tangent basis for each unit-sphere point."""
+    p = np.asarray(xyz, dtype=np.float64)
+    p = p / np.maximum(np.linalg.norm(p, axis=1, keepdims=True), 1.0e-30)
+    z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    x_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+
+    east = np.cross(z_axis[None, :], p)
+    bad = np.linalg.norm(east, axis=1) < 1.0e-10
+    if np.any(bad):
+        east[bad] = np.cross(x_axis[None, :], p[bad])
+    east = east / np.maximum(np.linalg.norm(east, axis=1, keepdims=True), 1.0e-30)
+
+    north = np.cross(p, east)
+    north = north / np.maximum(np.linalg.norm(north, axis=1, keepdims=True), 1.0e-30)
+    return east, north
+
+
+def add_geometry_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add deployable local-geometry features derived from existing edge columns.
+
+    These are intentionally supermesh-free: only cell centers, areas, and the
+    candidate graph are used. If the required physical columns are absent, this
+    is a no-op.
+    """
+    required = {
+        "source_index",
+        "target_index",
+        "src_x",
+        "src_y",
+        "src_z",
+        "tgt_x",
+        "tgt_y",
+        "tgt_z",
+        "src_area",
+        "tgt_area",
+    }
+    if not required.issubset(df.columns):
+        return df
+
+    eps = 1.0e-30
+    src_area = df["src_area"].to_numpy(dtype=np.float64, copy=False)
+    tgt_area = df["tgt_area"].to_numpy(dtype=np.float64, copy=False)
+    src_h = np.sqrt(np.maximum(src_area, eps))
+    tgt_h = np.sqrt(np.maximum(tgt_area, eps))
+    h_mean = np.sqrt(0.5 * np.maximum(src_area + tgt_area, eps))
+
+    df["src_h"] = src_h.astype("float32")
+    df["tgt_h"] = tgt_h.astype("float32")
+    df["log_src_area"] = np.log(np.maximum(src_area, eps)).astype("float32")
+    df["log_tgt_area"] = np.log(np.maximum(tgt_area, eps)).astype("float32")
+    if "area_ratio_tgt_over_src" in df.columns:
+        ratio = df["area_ratio_tgt_over_src"].to_numpy(dtype=np.float64, copy=False)
+    else:
+        ratio = tgt_area / np.maximum(src_area, eps)
+    df["log_area_ratio_tgt_over_src"] = np.log(np.maximum(ratio, eps)).astype("float32")
+
+    src_xyz = df[["src_x", "src_y", "src_z"]].to_numpy(dtype=np.float64, copy=False)
+    tgt_xyz = df[["tgt_x", "tgt_y", "tgt_z"]].to_numpy(dtype=np.float64, copy=False)
+    d_tgt_to_src = src_xyz - tgt_xyz
+    d_src_to_tgt = tgt_xyz - src_xyz
+
+    tgt_east, tgt_north = _stable_tangent_basis(tgt_xyz)
+    src_east, src_north = _stable_tangent_basis(src_xyz)
+
+    tgt_u = np.sum(d_tgt_to_src * tgt_east, axis=1)
+    tgt_v = np.sum(d_tgt_to_src * tgt_north, axis=1)
+    src_u = np.sum(d_src_to_tgt * src_east, axis=1)
+    src_v = np.sum(d_src_to_tgt * src_north, axis=1)
+    tan_dist = np.sqrt(tgt_u * tgt_u + tgt_v * tgt_v)
+
+    df["tgt_tan_e"] = tgt_u.astype("float32")
+    df["tgt_tan_n"] = tgt_v.astype("float32")
+    df["src_tan_e"] = src_u.astype("float32")
+    df["src_tan_n"] = src_v.astype("float32")
+    df["tgt_tan_e_over_h_tgt"] = (tgt_u / np.maximum(tgt_h, eps)).astype("float32")
+    df["tgt_tan_n_over_h_tgt"] = (tgt_v / np.maximum(tgt_h, eps)).astype("float32")
+    df["tgt_tan_e_over_h_mean"] = (tgt_u / np.maximum(h_mean, eps)).astype("float32")
+    df["tgt_tan_n_over_h_mean"] = (tgt_v / np.maximum(h_mean, eps)).astype("float32")
+    df["src_tan_e_over_h_src"] = (src_u / np.maximum(src_h, eps)).astype("float32")
+    df["src_tan_n_over_h_src"] = (src_v / np.maximum(src_h, eps)).astype("float32")
+    df["tan_dist"] = tan_dist.astype("float32")
+    df["tan_dist_over_h_src"] = (tan_dist / np.maximum(src_h, eps)).astype("float32")
+    df["tan_dist_over_h_tgt"] = (tan_dist / np.maximum(tgt_h, eps)).astype("float32")
+    df["tan_dist_over_h_mean"] = (tan_dist / np.maximum(h_mean, eps)).astype("float32")
+
+    h2 = np.maximum(h_mean * h_mean, eps)
+    df["tgt_tan_e2_over_h2"] = ((tgt_u * tgt_u) / h2).astype("float32")
+    df["tgt_tan_en_over_h2"] = ((tgt_u * tgt_v) / h2).astype("float32")
+    df["tgt_tan_n2_over_h2"] = ((tgt_v * tgt_v) / h2).astype("float32")
+
+    tgt_count = df.groupby("target_index", sort=False)["source_index"].transform("size").to_numpy(dtype=np.float64)
+    src_count = df.groupby("source_index", sort=False)["target_index"].transform("size").to_numpy(dtype=np.float64)
+    df["target_candidate_count"] = tgt_count.astype("float32")
+    df["source_candidate_count"] = src_count.astype("float32")
+    df["target_candidate_count_log"] = np.log1p(tgt_count).astype("float32")
+    df["source_candidate_count_log"] = np.log1p(src_count).astype("float32")
+    if "knn_rank" in df.columns:
+        rank = df["knn_rank"].to_numpy(dtype=np.float64, copy=False)
+        df["knn_rank_over_target_count"] = (rank / np.maximum(tgt_count - 1.0, 1.0)).astype("float32")
+
+    return df
+
+
+def physical_columns_for_features(columns: Iterable[str]) -> list[str]:
+    """Columns to read from parquet in order to materialize requested features."""
+    requested = set(columns)
+    out = []
+    for col in requested:
+        if col in MESH_CONDITION_FEATURES or col in SYNTHETIC_GEOMETRY_FEATURES:
+            continue
+        out.append(col)
+    if requested & SYNTHETIC_GEOMETRY_FEATURES:
+        out.extend(GEOMETRY_FEATURE_DEPENDENCIES)
+    out.extend(["src_mesh", "tgt_mesh", "pair"])
+    return list(dict.fromkeys(out))
+
+
 def load_edge_dataframe(path, columns=None):
+    if columns is not None:
+        columns = physical_columns_for_features(columns)
     df = pd.read_parquet(path, columns=columns)
     return add_mesh_condition_columns(df)
 
@@ -268,17 +441,10 @@ def compute_feature_stats(
         print(f"  reading sample: {p}")
 
         cols = list(set(edge_features + src_node_features + tgt_node_features))
-        # Some configured features, such as src_mesh_is_RLL, are synthetic
-        # conditioning columns. They are not stored in parquet, so read the
-        # physical columns needed to create them, then add them after loading.
-        mesh_condition_cols = {
-            "src_mesh_is_RLL", "src_mesh_is_CS", "src_mesh_is_ICOD",
-            "tgt_mesh_is_RLL", "tgt_mesh_is_CS", "tgt_mesh_is_ICOD",
-        }
-        physical_cols = [c for c in cols if c not in mesh_condition_cols]
-        for raw_col in ["src_mesh", "tgt_mesh", "pair"]:
-            if raw_col not in physical_cols:
-                physical_cols.append(raw_col)
+        # Some configured features are synthetic and not stored directly in
+        # parquet. Read their physical dependencies, then materialize them via
+        # add_mesh_condition_columns/add_geometry_feature_columns below.
+        physical_cols = physical_columns_for_features(cols)
 
         df = pd.read_parquet(p, columns=physical_cols)
         df = add_mesh_condition_columns(df)
@@ -341,10 +507,47 @@ def load_pair_tensors(
     """
     import numpy as np
 
-    edge_features, src_node_features, tgt_node_features = get_feature_lists(cfg)
-
     p = cfg.edge_path(pair)
-    df = pd.read_parquet(p)
+    return load_pair_tensors_from_path(
+        p,
+        cfg,
+        stats,
+        device=device,
+        pair=pair,
+    )
+
+
+def load_pair_tensors_from_path(
+    edge_path: str | Path,
+    cfg,
+    stats: dict,
+    device: torch.device | str,
+    *,
+    pair: str | None = None,
+    feature_lists: tuple[list[str], list[str], list[str]] | None = None,
+) -> dict:
+    """
+    Load one prepared source-target edge dataset from an explicit parquet path.
+
+    This is the inference/deployment companion to ``load_pair_tensors``.  It is
+    useful for externally prepared meshes whose edge parquet is not located at
+    ``cfg.edge_path(pair)``.
+
+    ``feature_lists`` defaults to the config's feature lists, but inference
+    should usually pass the feature lists stored in the checkpoint pack so the
+    tensor layout exactly matches training.
+    """
+    import numpy as np
+
+    if feature_lists is None:
+        edge_features, src_node_features, tgt_node_features = get_feature_lists(cfg)
+    else:
+        edge_features, src_node_features, tgt_node_features = feature_lists
+
+    df = pd.read_parquet(edge_path)
+    if pair is not None and "pair" not in df.columns:
+        df = df.copy()
+        df["pair"] = pair
     df = add_mesh_condition_columns(df)
 
     src_index_np = df["source_index"].to_numpy(dtype="int64").copy()
@@ -362,8 +565,14 @@ def load_pair_tensors(
     src_node_np = (src_node_np - stats["src_mean"]) / stats["src_std"]
     tgt_node_np = (tgt_node_np - stats["tgt_mean"]) / stats["tgt_std"]
 
-    edge_exists_np = df["edge_exists"].to_numpy(dtype="float32").copy()
-    S_true_np = df["weight"].to_numpy(dtype="float32").copy()
+    if "edge_exists" in df.columns:
+        edge_exists_np = df["edge_exists"].to_numpy(dtype="float32").copy()
+    else:
+        edge_exists_np = np.zeros(len(df), dtype=np.float32)
+    if "weight" in df.columns:
+        S_true_np = df["weight"].to_numpy(dtype="float32").copy()
+    else:
+        S_true_np = np.zeros(len(df), dtype=np.float32)
 
     area_src_np = np.zeros(n_src, dtype=np.float32)
     area_tgt_np = np.zeros(n_tgt, dtype=np.float32)

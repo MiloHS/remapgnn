@@ -1,86 +1,131 @@
 # remapgnn
 
-Learned TempestRemap-style conservative remapping operators for spherical climate meshes.
+Learned conservative remapping operators for spherical climate meshes.
 
-## Core idea
+The project goal is not to beat mature offline remapping packages in every
+setting.  The goal is a reusable learned remap operator that is conservative,
+reasonably accurate, mesh-flexible, and faster than constructing a new
+high-order overlap/supermesh map when a cached map is not already available.
 
-For a source mesh and target mesh, we build candidate source-target edges. The model predicts edge scores on this graph. Sinkhorn balancing turns those scores into a sparse mass matrix. The balancing ends on the source marginal, so global (source) mass conservation is enforced tightly; the target row sums (consistency — constants mapping to constants) are tracked and softly penalized rather than satisfied exactly. The remapping weights are then applied to fields on the source mesh.
+## Current result
 
-The goal is to learn a fast conservative approximation to TempestRemap operators across mesh pairs.
+The current default is:
 
-## Current best result
+- model: `v12_geom_base`
+- weights: `models_medium_improv/highorder_signed_v12_geom_mom1e4.pt`
+- config: `configs/v20b_base_a3p0_mink8_geom_v12.json`
+- inference projection: float64 solve, `eps_rel=1e-12`, `n_cg=800`
 
-The current best model is `v18_irno_corrector_from_v16_l24_a2p0_mink8`.
+Short version:
 
-It uses:
+> `v12_geom_base` with the cleaned projection is conservative to about `2e-9`,
+> improves on earlier learned baselines on real fields, and is faster than
+> generating new TempestRemap `np2` maps/supermeshes at the tested r32/r64
+> resolutions.  It does not beat TempestRemap `np2` on accuracy, and it does
+> not beat cached Tempest maps on load/apply time.
 
-- a frozen v16 gated-hybrid-attention GNN/Sinkhorn base remapper
-- a shared gated-hybrid-attention corrector
-- iterative correction steps conditioned on increasing spherical harmonic bands
-- Sinkhorn balancing after each correction step
+See [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md) for the numbers and
+recommended wording.
 
-The correction iteration is:
+## Use on a new mesh pair
 
-1. base v16 operator
-2. correction with `lmax=8`
-3. correction with `lmax=16`
-4. correction with `lmax=24`
+The current user-facing path is:
 
-The reported metric is **agreement error with TempestRemap** — the relative L2 distance between the
-learned remap and Tempest's remap of the same field, averaged over the field set. Lower means the
-model reproduces Tempest more closely; this is *fidelity to Tempest*, **not** accuracy against an
-analytic truth.
+1. build a k-distance candidate graph from source/target mesh files;
+2. run the v12 GNN and cleaned conservative projection;
+3. write a sparse remap operator;
+4. optionally apply it to a source field.
 
-Numbers below are from a clean retrain (full 8-pair training, a 2-pair held-out validation set used
-for model selection, and the test pair `RLL-r90-180_to_CS-r16` held out of both — see
-`docs/AUDIT_REPORT.md`). Across the six evaluation pairs the corrector lowers the mean agreement
-error from `0.00387` to `0.00354` (≈8.6%).
+Start with [`docs/INFERENCE.md`](docs/INFERENCE.md).
 
-**This six-pair mean is in-sample-dominated and overstates generalization.** Five of the six pairs
-are training pairs, where the corrector improves a lot (≈12–19%); on the genuinely held-out pair
-`RLL-r90-180_to_CS-r16` it improves only `0.00389` → `0.00385` (**≈1%**). The large train-vs-held-out
-gap is an overfitting signature: with the current ~8 same-family pairs the corrector learns to mimic
-Tempest on pairs it has seen, and that barely transfers to a new pair. (Held-out n=1, single seed.)
-The generalization story for this project is topology diversity (v20a/v20b), not the corrector alone.
+The main command for the model/projection step is:
+
+```bash
+python scripts/build_remap_operator.py \
+  --config configs/v20b_base_a3p0_mink8_geom_v12.json \
+  --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
+  --edge-parquet work/graphs/edge_dataset_SRC_to_TGT_kdist_a2p0_mink8.parquet \
+  --pair SRC_to_TGT \
+  --out-map outputs/SRC_to_TGT_remapgnn_v12.nc
+```
+
+The current model weights should be distributed as a GitHub Release asset; see
+[`docs/MODEL_RELEASE.md`](docs/MODEL_RELEASE.md).
+
+## Important artifacts
+
+Primary docs:
+
+- [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md)
+- [`docs/PROJECT_STATUS_AND_NEXT_STEPS.md`](docs/PROJECT_STATUS_AND_NEXT_STEPS.md)
+- [`docs/REPOSITORY_CLEANUP.md`](docs/REPOSITORY_CLEANUP.md)
+- [`docs/INFERENCE.md`](docs/INFERENCE.md)
+- [`docs/MODEL_RELEASE.md`](docs/MODEL_RELEASE.md)
+
+Local audit/benchmark outputs used to produce the summary docs:
+
+- `analysis_medium_improv/audits/v12_expanded_realfields_nonico_f64_proj800_eps12/`
+- `analysis_medium_improv/audits/projection_sweep_v12_nonico_f64_eps12/`
+- `analysis_medium_improv/benchmarks/v12_clean_projection/`
+- `analysis_medium_improv/benchmarks/v12_clean_projection_r64/`
+- `analysis_medium_improv/benchmarks/tempest_generation_nonico/`
+- `analysis_medium_improv/benchmarks/tempest_generation_r64/`
+
+These generated outputs are ignored by default; the important numbers are
+copied into [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md).
+
+Primary scripts:
+
+- `scripts/build_external_kdist_graph.py`
+- `scripts/build_remap_operator.py`
+- `scripts/train_config_highorder.py`
+- `scripts/train_config_highorder_corrector.py`
+- `scripts/audit_remap_operator.py`
+- `scripts/sweep_projection_conservation.py`
+- `scripts/benchmark_remap_operator.py`
+- `scripts/benchmark_tempest_generation.py`
+
+Local current reproducibility jobs are kept at the repo root in this workspace,
+but PBS files are ignored by default because they are cluster-specific:
+
+- `jobs_audit_v12_expanded_realfields_f64_proj800_eps12.pbs`
+- `jobs_projection_sweep_v12_nonico_f64_eps12.pbs`
+- `jobs_benchmark_v12_clean_projection.pbs`
+- `jobs_benchmark_tempest_generation_nonico.pbs`
+- `jobs_benchmark_v12_r64_scaling.pbs`
+
+Older exploratory jobs, logs, and one-off experimental configs have been moved
+to the local ignored `archive/` directory.
 
 ## Repository structure
 
-- `remapgnn/` — reusable package code
-- `scripts/` — training and evaluation scripts
+- `remapgnn/` — package code
+- `scripts/` — training, audit, and benchmarking scripts
 - `configs/` — experiment configurations
-- `docs/` — experiment notes, model lineage, and result summaries
-- `analysis_medium_improv/github_results/` — curated result CSVs and figures
+- `docs/` — current status, result summaries, and design notes
+- `analysis_medium_improv/` — audit outputs, benchmark outputs, edge datasets,
+  and curated experiment artifacts; generated contents are mostly ignored
+- `models_medium_improv/` — trained model packs
+- `maps_medium_improv/` — generated comparison maps
 
-## Important docs
+## Current interpretation
 
-- `docs/INFERENCE.md` — how to download the trained v18 weights and current inference workflow
+Keep:
 
-- `docs/MODEL_LINEAGE.md`
-- `docs/RESULTS_SUMMARY.md`
-- `docs/CONVERGENCE_STUDY.md`
+- geometric features and moment-aware training from `v12_geom_base`
+- the cleaned float64 projection for deployable conservation
+- the audit suite over real fields, analytic fields, spectral shells, and
+  Cartesian moments
+- the benchmark split between learned operator construction, cached-map
+  loading, and Tempest map generation
 
-## Main training scripts
+Do not claim:
 
-- `scripts/train_config.py`
-- `scripts/train_config_balanced.py`
-- `scripts/train_config_balanced_harmonic.py`
-- `scripts/train_config_irno_corrector.py`
+- that the learned operator is more accurate than TempestRemap `np2`
+- that it is faster than using an already-cached Tempest map
 
-## Main evaluation scripts
+Reasonable paper/tool framing:
 
-- `scripts/evaluate_config.py`
-- `scripts/evaluate_spectral_harmonics.py`
-- `scripts/evaluate_irno_corrector.py`
-- `scripts/evaluate_irno_spectral_trajectory.py`
-
-## Model lineage summary
-
-- v10: hybrid attention GNN
-- v11: gated hybrid attention GNN
-- v16: gated hybrid attention with spherical harmonic loss up to degree 24
-- v18: frozen v16 plus iterative conditional corrector
-- v19: gentler v18 ablation
-
-## Status
-
-Current best result is v18. v19 shows that gentler correction remains stable but does not outperform the main v18 run.
+> A conservative, supermesh-free learned remapping prototype that approaches
+> `np2` accuracy while reducing new-operator construction cost at the tested
+> resolutions.

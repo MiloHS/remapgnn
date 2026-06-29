@@ -1,198 +1,206 @@
-# Inference with trained remapgnn weights
+# Inference with RemapGNN
 
-This page describes how to run research inference with the trained `v18_irno_corrector_from_v16_l24_a2p0_mink8` model.
+This page describes the current research-prototype inference path for using
+RemapGNN on a new source/target mesh pair.
 
-The workflow is:
+Current default:
 
-    clone repo
-    download weights
-    prepare source mesh, target mesh, and source field
-    build candidate source-target graph
-    run learned remapping inference
-    optionally visualize the output
-    optionally compute summary metrics
+- model: `v12_geom_base`
+- expected weight path:
+  `models_medium_improv/highorder_signed_v12_geom_mom1e4.pt`
+- config: `configs/v20b_base_a3p0_mink8_geom_v12.json`
+- projection: float64, `eps_rel=1e-12`, `n_cg=800`
 
-## 1. Clone the repository
+The old GitHub release contains a v18 corrector model.  That release is useful
+history, but the current documented path below expects a new v12 weight release.
 
-    git clone https://github.com/MiloHS/remapgnn.git
-    cd remapgnn
+## Install
 
-## 2. Install Python dependencies
+```bash
+git clone https://github.com/MiloHS/remapgnn.git
+cd remapgnn
 
-Using a virtual environment:
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
+```
 
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install --upgrade pip
-    pip install -r requirements.txt
+On a CUDA machine, install the matching PyTorch build first if needed; see
+`requirements.txt`.
 
-Or using conda:
+## Download weights
 
-    conda create -n remapgnn python=3.11 -y
-    conda activate remapgnn
-    pip install -r requirements.txt
+The current v12 model should be distributed as a GitHub Release asset and
+extracted so this file exists:
 
-The main dependencies are PyTorch, NumPy, pandas, SciPy, xarray, pyarrow, netCDF4, and matplotlib.
+```text
+models_medium_improv/highorder_signed_v12_geom_mom1e4.pt
+```
 
-## 3. Download trained weights
+Suggested future release tag/name:
 
-The trained v18 weights are given as a GitHub Release asset.
+```text
+v12-geom-base
+remapgnn_v12_geom_base_2026-06-29.tar.gz
+```
 
-Release page:
+Until that release exists, copy the checkpoint from the Swing workspace into
+the path above.
 
-    https://github.com/MiloHS/remapgnn/releases/tag/v18-weights
+## What “arbitrary mesh” means here
 
-Download:
+The GNN does not consume raw meshes directly.  The pipeline is:
 
-    remapgnn_v18_weights.tar.gz
+```text
+source mesh + target mesh
+        ↓
+k-distance candidate graph with geometric features
+        ↓
+GNN predicts signed edge masses
+        ↓
+float64 conservative/consistent projection
+        ↓
+sparse remap operator
+        ↓
+optional application to source fields
+```
 
-Place it in the repository root and extract it:
+So arbitrary-mesh usage currently means: any mesh pair that can be converted
+into the expected cell-centered edge parquet with areas, centers, and candidate
+source-target edges.
 
-    tar -xzf remapgnn_v18_weights.tar.gz
+The helper script accepts common mesh variable names:
 
-**Important — the v18 corrector needs the frozen v16 base too.** v18 inference is not a single
-file: the corrector checkpoint stores the base model's paths and reads the v16 base checkpoint at
-run time for both the normalization stats and the base operator weights. The release archive must
-therefore contain *both* checkpoints, extracted into `models_medium_improv/`:
+- longitude: `lon`, `longitude`, `lonCell`, `xlon`
+- latitude: `lat`, `latitude`, `latCell`, `ylat`
+- area: `cell_area`, `area`, `areaCell`, `cellArea`, `area_cell`
+- Cartesian centers, if present: `x/y/z`, `xCell/yCell/zCell`, `cell_x/cell_y/cell_z`
 
-    models_medium_improv/bipartite_gnn_sinkhorn_v18_irno_corrector_from_v16_l24_kdist_a2p0_mink8.pt
-    models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt
+If areas are absent, the graph builder falls back to uniform unit-sphere areas;
+that is acceptable only for quick tests.
 
-The base paths are stored as repo-relative paths, so run all inference commands **from the
-repository root**. After extracting, verify both files exist:
+## 1. Build a candidate graph
 
-    ls models_medium_improv/bipartite_gnn_sinkhorn_v18_irno_corrector_from_v16_l24_kdist_a2p0_mink8.pt
-    ls models_medium_improv/bipartite_gnn_sinkhorn_v16_gated_hybridattn_balanced_long_harmonic_l24_kdist_a2p0_mink8.pt
+```bash
+mkdir -p work/graphs outputs
 
-(The matching `configs/v16_*.json` and `configs/v18_*.json` are already in the repository.)
+python scripts/build_external_kdist_graph.py \
+  --src-mesh my_data/source_mesh.nc \
+  --tgt-mesh my_data/target_mesh.nc \
+  --src-name MY-SOURCE \
+  --tgt-name MY-TARGET \
+  --out work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+  --alpha 2.0 \
+  --min-k 8 \
+  --max-k 256 \
+  --normalize-area-sums
+```
 
-## 4. Model summary
+This is supermesh-free: it uses centers, areas, and nearest-neighbor candidate
+edges, not polygon overlaps.
 
-The current model is v18:
+Important caveat: every target cell gets at least `min-k` source candidates,
+but some source cells can still have zero candidate edges on unusual mesh pairs.
+The operator builder reports zero-degree source/target counts because zero-edge
+source cells cannot be conserved by any sparse operator on that graph.
 
-- frozen v16 gated-hybrid-attention GNN/Sinkhorn base remapper
-- iterative learned corrector
-- correction stages at `lmax=8`, `lmax=16`, and `lmax=24`
-- Sinkhorn balancing after each correction step
-- final output is a sparse conservative remapping operator
+## 2. Build the learned remap operator
 
-## 5. Input requirements
+```bash
+python scripts/build_remap_operator.py \
+  --config configs/v20b_base_a3p0_mink8_geom_v12.json \
+  --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
+  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+  --pair MY-SOURCE_to_MY-TARGET \
+  --out-map outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12.nc \
+  --summary-json outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12_summary.json \
+  --projection-dtype float64 \
+  --projection-eps-rel 1e-12 \
+  --n-cg 800
+```
 
-You need three files:
+The NetCDF map stores:
 
-    source_mesh.nc
-    target_mesh.nc
-    source_field.nc
+- `S`: sparse remap weights
+- `row`: 1-based target indices
+- `col`: 1-based source indices
+- `area_a`: source cell areas
+- `area_b`: target cell areas
 
-The source and target meshes should be spherical finite-volume or cell-centered meshes.
+You can also write a compressed NumPy map:
 
-The mesh files should contain longitude, latitude, and preferably cell area. The helper scripts try common names such as:
+```bash
+--out-map outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12.npz
+```
 
-    lon, longitude, lonCell, xlon
-    lat, latitude, latCell, ylat
-    cell_area, area, areaCell, cellArea
+At the end, the script prints a small audit:
 
-## 6. Build a candidate source-target graph
+```text
+conservation_residual
+consistency_residual
+zero_degree_source
+zero_degree_target
+operator build time
+```
 
-The GNN does not consume raw meshes directly, you need to generate a source-target candidate graph with geometric edge features.
+For the current model, the intended deployable setting is roughly
+`conservation_residual ≈ 1e-9` on supported graph pairs.
 
-For a new mesh pair, build the graph:
+## 3. Optionally apply the operator to a field
 
-    mkdir -p analysis_medium_improv outputs
+If your source field file has a variable named `temperature`:
 
-    python scripts/build_external_kdist_graph.py \
-      --src-mesh my_data/source_mesh.nc \
-      --tgt-mesh my_data/target_mesh.nc \
-      --src-name MY-SOURCE \
-      --tgt-name MY-TARGET \
-      --out analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
-      --alpha 2.0 \
-      --min-k 8 \
-      --max-k 256 \
-      --normalize-area-sums
+```bash
+python scripts/build_remap_operator.py \
+  --config configs/v20b_base_a3p0_mink8_geom_v12.json \
+  --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
+  --edge-parquet work/graphs/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
+  --pair MY-SOURCE_to_MY-TARGET \
+  --out-map outputs/MY-SOURCE_to_MY-TARGET_remapgnn_v12.nc \
+  --src-field-nc my_data/source_field.nc \
+  --field temperature \
+  --target-mesh-nc my_data/target_mesh.nc \
+  --out-field outputs/temperature_on_target_remapgnn_v12.nc
+```
 
-This writes:
+The field output is a simple target-cell NetCDF file with the remapped variable,
+target cell area, and lon/lat metadata when available.
 
-    analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet
+## 4. Summarize or visualize
 
-## 7. Run learned remapping inference
+Basic summary:
 
-Apply the trained model to a source field.
+```bash
+python scripts/summarize_remap_output.py \
+  --pred-nc outputs/temperature_on_target_remapgnn_v12.nc \
+  --field temperature \
+  --target-mesh-nc my_data/target_mesh.nc \
+  --source-nc my_data/source_field.nc \
+  --source-field temperature \
+  --source-mesh-nc my_data/source_mesh.nc \
+  --out-csv outputs/temperature_summary.csv
+```
 
-For a field named `temperature`:
+Visualization:
 
-    python scripts/infer_prepared_pair.py \
-      --config configs/v18_irno_corrector_from_v16_l24_a2p0_mink8.json \
-      --pair MY-SOURCE_to_MY-TARGET \
-      --edge-parquet analysis_medium_improv/edge_dataset_MY-SOURCE_to_MY-TARGET_kdist_a2p0_mink8.parquet \
-      --src-field-nc my_data/source_field.nc \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --field temperature \
-      --stage lmax24 \
-      --balance-iters 2000 \
-      --out outputs/temperature_remapped_to_target.nc \
-      --out-map outputs/MY-SOURCE_to_MY-TARGET_learned_operator.npz
+```bash
+python scripts/visualize_remap_output.py \
+  --pred-nc outputs/temperature_on_target_remapgnn_v12.nc \
+  --field temperature \
+  --target-mesh-nc my_data/target_mesh.nc \
+  --out outputs/temperature_on_target_remapgnn_v12.png
+```
 
-This writes:
+## Legacy v18 release
 
-    outputs/temperature_remapped_to_target.nc
-    outputs/MY-SOURCE_to_MY-TARGET_learned_operator.npz
-    
-For a faster test run, use fewer Sinkhorn iterations:
+The old release asset for `v18_irno_corrector_from_v16_l24_a2p0_mink8` used the
+legacy script:
 
-    --balance-iters 300
+```bash
+python scripts/infer_prepared_pair.py ...
+```
 
-## 8. Visualize the remapped field
-
-If you only have the prediction:
-
-    python scripts/visualize_remap_output.py \
-      --pred-nc outputs/temperature_remapped_to_target.nc \
-      --field temperature \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --out outputs/temperature_remapped_to_target.png
-
-If you also have a target truth/reference field:
-
-    python scripts/visualize_remap_output.py \
-      --pred-nc outputs/temperature_remapped_to_target.nc \
-      --field temperature \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --truth-nc my_data/target_truth.nc \
-      --truth-field temperature \
-      --out outputs/temperature_prediction_truth_error.png
-
-## 9. Compute summary metrics
-
-Without truth, compute basic field statistics:
-
-    python scripts/summarize_remap_output.py \
-      --pred-nc outputs/temperature_remapped_to_target.nc \
-      --field temperature \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --out-csv outputs/temperature_summary.csv
-
-If the source field and source mesh are provided, the script also computes global conservation:
-
-    python scripts/summarize_remap_output.py \
-      --pred-nc outputs/temperature_remapped_to_target.nc \
-      --field temperature \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --source-nc my_data/source_field.nc \
-      --source-field temperature \
-      --source-mesh-nc my_data/source_mesh.nc \
-      --out-csv outputs/temperature_summary.csv
-
-If target truth is available, compute relative L2 and area-weighted relative L2:
-
-    python scripts/summarize_remap_output.py \
-      --pred-nc outputs/temperature_remapped_to_target.nc \
-      --field temperature \
-      --target-mesh-nc my_data/target_mesh.nc \
-      --truth-nc my_data/target_truth.nc \
-      --truth-field temperature \
-      --source-nc my_data/source_field.nc \
-      --source-field temperature \
-      --source-mesh-nc my_data/source_mesh.nc \
-      --out-csv outputs/temperature_summary.csv
-
+That path is kept for reproducibility of the old release, but it is not the
+current recommended model/tool path.

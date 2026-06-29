@@ -27,10 +27,15 @@ jobs/
 *.ckpt
 *.nc
 *.parquet
+*.log
 *.out
 *.pbs
 *.o[0-9]*
 0.5
+
+# Local cleanup/archive holding area. Keep it recoverable locally, but do not
+# push old cluster jobs/logs/one-off sweep configs to GitHub.
+archive/
 
 # Ignore generated analysis outputs by default
 analysis_medium_improv/*

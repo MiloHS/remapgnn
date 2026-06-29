@@ -1,0 +1,137 @@
+{
+  "run_name": "v20b_base_a3p0_mink8_geom_v12",
+  "model_tag": "bipartite_gnn_sinkhorn_v20b_base_geom_v12_l24_kdist_a3p0_mink8",
+  "architecture": "gated_hybrid_attention",
+  "graph": {
+    "kind": "distance_cutoff",
+    "alpha": 3.0,
+    "min_k": 8,
+    "suffix": "kdist_a3p0_mink8",
+    "K": "dist_a3p0_mink8"
+  },
+  "paths": {
+    "analysis_dir": "analysis_medium_improv",
+    "maps_dir": "maps_medium_improv",
+    "models_dir": "models_medium_improv",
+    "mira_dir": "data/MIRA-Datasets",
+    "eval_template": "scripts/evaluate_bipartite_gnn_sinkhorn_v10_hybridattn_kdist_a2p0_mink8.py"
+  },
+  "features": {
+    "edge": [
+      "dx",
+      "dy",
+      "dz",
+      "chord_dist",
+      "area_ratio_tgt_over_src",
+      "log_area_ratio_tgt_over_src",
+      "knn_rank",
+      "knn_rank_over_target_count",
+      "target_candidate_count_log",
+      "source_candidate_count_log",
+      "tgt_tan_e",
+      "tgt_tan_n",
+      "src_tan_e",
+      "src_tan_n",
+      "tgt_tan_e_over_h_tgt",
+      "tgt_tan_n_over_h_tgt",
+      "tgt_tan_e_over_h_mean",
+      "tgt_tan_n_over_h_mean",
+      "src_tan_e_over_h_src",
+      "src_tan_n_over_h_src",
+      "tan_dist",
+      "tan_dist_over_h_src",
+      "tan_dist_over_h_tgt",
+      "tan_dist_over_h_mean",
+      "tgt_tan_e2_over_h2",
+      "tgt_tan_en_over_h2",
+      "tgt_tan_n2_over_h2"
+    ],
+    "src_node": [
+      "src_x",
+      "src_y",
+      "src_z",
+      "src_area",
+      "src_h",
+      "log_src_area"
+    ],
+    "tgt_node": [
+      "tgt_x",
+      "tgt_y",
+      "tgt_z",
+      "tgt_area",
+      "tgt_h",
+      "log_tgt_area"
+    ]
+  },
+  "pairs": [
+    "CS-r32_to_ICOD-r32",
+    "ICOD-r32_to_CS-r32",
+    "CS-r64_to_ICOD-r64",
+    "ICOD-r64_to_CS-r64",
+    "CS-r32_to_RLL-r90-180",
+    "RLL-r90-180_to_CS-r32",
+    "MPAS-r4_to_CS-r32",
+    "ICOD-r32_to_RLL-r90-180",
+    "ICO-r32_to_CS-r32",
+    "ICOD-r32_to_ICO-r32"
+  ],
+  "training": {
+    "train_pairs": [
+      "CS-r32_to_ICOD-r32",
+      "ICOD-r32_to_CS-r32",
+      "CS-r64_to_ICOD-r64",
+      "ICOD-r64_to_CS-r64",
+      "CS-r32_to_RLL-r90-180",
+      "RLL-r90-180_to_CS-r32",
+      "MPAS-r4_to_CS-r32"
+    ],
+    "val_pair": "ICOD-r32_to_RLL-r90-180",
+    "test_pair": "ICO-r32_to_CS-r32",
+    "hidden": 128,
+    "epochs": 200,
+    "balance_iters": 2000,
+    "decoder_chunk_size": 10000,
+    "seed": 0,
+    "lr": 0.0002,
+    "weight_decay": 1e-05,
+    "sinkhorn_iters_train": 30,
+    "sinkhorn_iters_eval": 300,
+    "stat_sample_per_pair": 80000,
+    "lambda_pos_s": 1.0,
+    "lambda_neg_s": 0.05,
+    "lambda_bce": 0.05,
+    "checkpoint_pairs": [
+      "ICOD-r32_to_RLL-r90-180",
+      "ICO-r32_to_CS-r32",
+      "ICOD-r32_to_ICO-r32"
+    ],
+    "checkpoint_score": {
+      "metric": "mean_guardrail_spectral_shells",
+      "worst_pair_weight": 0.5
+    },
+    "harmonic_loss": {
+      "enabled": true,
+      "degrees": [
+        0,
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24
+      ],
+      "modes_per_degree": 4,
+      "lambda_field": 3.0,
+      "max_fields_per_step": 8,
+      "checkpoint_field_weight": 1.0
+    }
+  },
+  "fields": [
+    "AnalyticalFun1",
+    "AnalyticalFun2",
+    "TotalPrecipWater",
+    "CloudFraction",
+    "Topography"
+  ]
+}
