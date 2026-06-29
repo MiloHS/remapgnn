@@ -76,7 +76,7 @@ def load_base_model(pack_path: Path, cfg, device):
     if pack.get("kind") == "highorder_corrector":
         raise NotImplementedError(
             "build_remap_operator.py currently supports base packs such as v12_geom_base. "
-            "For legacy v18 corrector packs, use scripts/infer_prepared_pair.py."
+            "Corrector-pack inference is not part of the cleaned public v12 path."
         )
 
     model = build_model(
@@ -257,7 +257,12 @@ def infer_pair_from_edge_path(edge_path: Path, fallback_pair: str | None) -> str
     stem = edge_path.stem
     if stem.startswith("edge_dataset_"):
         stem = stem[len("edge_dataset_") :]
-    for suffix in ["_kdist_a2p0_mink8", "_kdist"]:
+    for suffix in [
+        "_kdist_a3p0_mink8",
+        "_kdist_a2p0_mink8",
+        "_kdist_a4p0_mink16",
+        "_kdist",
+    ]:
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
     if "_to_" not in stem:

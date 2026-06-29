@@ -562,7 +562,7 @@ def main():
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-    base_cfg_path = Path(irno.get("base_config", "configs/v16_gated_hybridattn_balanced_long_harmonic_l24_a2p0_mink8.json"))
+    base_cfg_path = Path(irno.get("base_config", "configs/v20b_base_a3p0_mink8.json"))
     base_cfg = load_config(str(base_cfg_path))
     base_model_path = Path(irno.get("base_model_path", str(base_cfg.model_path)))
 

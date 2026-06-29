@@ -196,7 +196,7 @@ def main():
     ap.add_argument("--src-name", required=True)
     ap.add_argument("--tgt-name", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--alpha", type=float, default=2.0)
+    ap.add_argument("--alpha", type=float, default=3.0)
     ap.add_argument("--min-k", type=int, default=8)
     ap.add_argument("--max-k", type=int, default=256)
     ap.add_argument("--normalize-area-sums", action="store_true")

@@ -1,6 +1,6 @@
 {
   "run_name": "v20b_base_a3p0_mink8",
-  "model_tag": "bipartite_gnn_sinkhorn_v20b_base_diverse_topologies_l24_kdist_a2p0_mink8",
+  "model_tag": "bipartite_gnn_sinkhorn_v20b_base_a3p0_mink8",
   "architecture": "gated_hybrid_attention",
   "graph": {
     "kind": "distance_cutoff",
@@ -13,8 +13,7 @@
     "analysis_dir": "analysis_medium_improv",
     "maps_dir": "maps_medium_improv",
     "models_dir": "models_medium_improv",
-    "mira_dir": "data/MIRA-Datasets",
-    "eval_template": "scripts/evaluate_bipartite_gnn_sinkhorn_v10_hybridattn_kdist_a2p0_mink8.py"
+    "mira_dir": "data/MIRA-Datasets"
   },
   "pairs": [
     "RLL-r90-180_to_CS-r16",

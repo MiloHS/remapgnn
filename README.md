@@ -44,7 +44,7 @@ The main command for the model/projection step is:
 python scripts/build_remap_operator.py \
   --config configs/v20b_base_a3p0_mink8_geom_v12.json \
   --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
-  --edge-parquet work/graphs/edge_dataset_SRC_to_TGT_kdist_a2p0_mink8.parquet \
+  --edge-parquet work/graphs/edge_dataset_SRC_to_TGT_kdist_a3p0_mink8.parquet \
   --pair SRC_to_TGT \
   --out-map outputs/SRC_to_TGT_remapgnn_v12.nc
 ```
@@ -57,9 +57,8 @@ The current model weights should be distributed as a GitHub Release asset; see
 Primary docs:
 
 - [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md)
-- [`docs/PROJECT_STATUS_AND_NEXT_STEPS.md`](docs/PROJECT_STATUS_AND_NEXT_STEPS.md)
-- [`docs/REPOSITORY_CLEANUP.md`](docs/REPOSITORY_CLEANUP.md)
 - [`docs/INFERENCE.md`](docs/INFERENCE.md)
+- [`docs/MODEL_LINEAGE.md`](docs/MODEL_LINEAGE.md)
 - [`docs/MODEL_RELEASE.md`](docs/MODEL_RELEASE.md)
 
 Local audit/benchmark outputs used to produce the summary docs:
@@ -78,6 +77,8 @@ Primary scripts:
 
 - `scripts/build_external_kdist_graph.py`
 - `scripts/build_remap_operator.py`
+- `scripts/summarize_remap_output.py`
+- `scripts/visualize_remap_output.py`
 - `scripts/train_config_highorder.py`
 - `scripts/train_config_highorder_corrector.py`
 - `scripts/audit_remap_operator.py`
@@ -85,28 +86,16 @@ Primary scripts:
 - `scripts/benchmark_remap_operator.py`
 - `scripts/benchmark_tempest_generation.py`
 
-Local current reproducibility jobs are kept at the repo root in this workspace,
-but PBS files are ignored by default because they are cluster-specific:
-
-- `jobs_audit_v12_expanded_realfields_f64_proj800_eps12.pbs`
-- `jobs_projection_sweep_v12_nonico_f64_eps12.pbs`
-- `jobs_benchmark_v12_clean_projection.pbs`
-- `jobs_benchmark_tempest_generation_nonico.pbs`
-- `jobs_benchmark_v12_r64_scaling.pbs`
-
-Older exploratory jobs, logs, and one-off experimental configs have been moved
-to the local ignored `archive/` directory.
+Cluster-specific jobs, logs, model weights, maps, and generated analysis outputs
+are ignored by default.  Model weights should be distributed through GitHub
+Releases, not committed to git.
 
 ## Repository structure
 
 - `remapgnn/` — package code
-- `scripts/` — training, audit, and benchmarking scripts
-- `configs/` — experiment configurations
-- `docs/` — current status, result summaries, and design notes
-- `analysis_medium_improv/` — audit outputs, benchmark outputs, edge datasets,
-  and curated experiment artifacts; generated contents are mostly ignored
-- `models_medium_improv/` — trained model packs
-- `maps_medium_improv/` — generated comparison maps
+- `scripts/` — public inference, training, audit, and benchmarking scripts
+- `configs/` — current public configs
+- `docs/` — current results, inference instructions, model lineage, and release notes
 
 ## Current interpretation
 

@@ -31,6 +31,8 @@ jobs/
 *.out
 *.pbs
 *.o[0-9]*
+*.tar.gz
+*.tgz
 0.5
 
 # Local cleanup/archive holding area. Keep it recoverable locally, but do not
@@ -39,7 +41,3 @@ archive/
 
 # Ignore generated analysis outputs by default
 analysis_medium_improv/*
-
-# Keep only curated public results
-!analysis_medium_improv/github_results/
-!analysis_medium_improv/github_results/**
