@@ -246,3 +246,184 @@ def doubly_constrained_project_implicit(q, src_index, tgt_index, area_src, area_
     moment_coef [E, D] to additionally enforce exact ℓ=1 (linear) reproduction (see module docstring)."""
     return _DCProjectImplicit.apply(q, src_index, tgt_index, area_src, area_tgt,
                                     n_src, n_tgt, eps_rel, n_cg, tol, moment_coef, solve_dtype)
+
+
+def _local_target_moment_correction(M, tgt_index, n_tgt, moment_coef, moment_ridge=1.0e-4, row_ridge=1.0e-12):
+    """Minimum-norm per-target correction for local moment residuals.
+
+    This correction is local and intentionally secondary: it preserves each
+    target row to first order through a row-sum equation, but it does not try to
+    preserve source marginals.  Callers should run the standard marginal
+    projection after it, making conservation/consistency the final hard
+    constraint.
+    """
+    dtype = M.dtype
+    cf = _prep_moment(moment_coef, tgt_index, n_tgt, dtype=dtype)
+    D = int(cf.shape[1])
+
+    ones = torch.ones_like(M, dtype=dtype)
+    deg = scatter_sum_torch(ones, tgt_index, n_tgt)
+    sums = [scatter_sum_torch(cf[:, d], tgt_index, n_tgt) for d in range(D)]
+    mom = [scatter_sum_torch(M * cf[:, d], tgt_index, n_tgt) for d in range(D)]
+
+    G = torch.zeros((n_tgt, D + 1, D + 1), device=M.device, dtype=dtype)
+    rhs = torch.zeros((n_tgt, D + 1), device=M.device, dtype=dtype)
+    G[:, 0, 0] = deg + float(row_ridge)
+    for d in range(D):
+        G[:, 0, d + 1] = sums[d]
+        G[:, d + 1, 0] = sums[d]
+        rhs[:, d + 1] = -mom[d]
+        for k in range(D):
+            G[:, d + 1, k + 1] = scatter_sum_torch(cf[:, d] * cf[:, k], tgt_index, n_tgt)
+    for d in range(D):
+        G[:, d + 1, d + 1] = G[:, d + 1, d + 1] + float(moment_ridge)
+
+    lam = torch.linalg.solve(G, rhs)
+    corr = lam[:, 0][tgt_index]
+    for d in range(D):
+        corr = corr + lam[:, d + 1][tgt_index] * cf[:, d]
+    return M + corr
+
+
+def doubly_constrained_project_local_moment(
+    q,
+    src_index,
+    tgt_index,
+    area_src,
+    area_tgt,
+    n_src,
+    n_tgt,
+    eps_rel=1e-9,
+    n_cg=400,
+    tol=1e-12,
+    moment_coef=None,
+    moment_ridge=1.0e-4,
+    moment_relax=1.0,
+    moment_iters=1,
+    moment_coef2=None,
+    moment2_ridge=1.0e-3,
+    moment2_relax=0.5,
+    moment2_iters=1,
+    moment_coef3=None,
+    moment3_ridge=1.0e-2,
+    moment3_relax=0.5,
+    moment3_iters=0,
+    solve_dtype=None,
+    use_implicit=True,
+):
+    """Project with hard marginals and a secondary local moment correction.
+
+    Sequence:
+      1. standard source/target marginal projection;
+      2. per-target damped least-squares moment correction;
+      3. standard source/target marginal projection again.
+
+    This avoids putting moment equations in the same global solve as the two
+    remap marginals.  The last operation is always the proven marginal
+    projection, so conservation/consistency remain the hard constraints.
+    """
+    use_l1 = moment_coef is not None and int(moment_iters) > 0 and float(moment_relax) != 0.0
+    use_l2 = moment_coef2 is not None and int(moment2_iters) > 0 and float(moment2_relax) != 0.0
+    use_l3 = moment_coef3 is not None and int(moment3_iters) > 0 and float(moment3_relax) != 0.0
+    if not use_l1 and not use_l2 and not use_l3:
+        project = doubly_constrained_project_implicit if use_implicit else doubly_constrained_project
+        return project(
+            q,
+            src_index,
+            tgt_index,
+            area_src,
+            area_tgt,
+            n_src,
+            n_tgt,
+            eps_rel=eps_rel,
+            n_cg=n_cg,
+            tol=tol,
+            solve_dtype=solve_dtype,
+        )
+
+    project = doubly_constrained_project_implicit if use_implicit else doubly_constrained_project
+    dtype = solve_dtype or q.dtype
+    M = project(
+        q,
+        src_index,
+        tgt_index,
+        area_src,
+        area_tgt,
+        n_src,
+        n_tgt,
+        eps_rel=eps_rel,
+        n_cg=n_cg,
+        tol=tol,
+        solve_dtype=solve_dtype,
+    )
+    n_l1 = int(moment_iters) if use_l1 else 0
+    n_l2 = int(moment2_iters) if use_l2 else 0
+    n_l3 = int(moment3_iters) if use_l3 else 0
+    for i in range(max(n_l1, n_l2, n_l3)):
+        if i < n_l1:
+            Mc = _local_target_moment_correction(
+                M.to(dtype=dtype),
+                tgt_index,
+                n_tgt,
+                moment_coef,
+                moment_ridge=moment_ridge,
+            )
+            M = M + float(moment_relax) * (Mc.to(dtype=M.dtype) - M)
+            M = project(
+                M,
+                src_index,
+                tgt_index,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                eps_rel=eps_rel,
+                n_cg=n_cg,
+                tol=tol,
+                solve_dtype=solve_dtype,
+            )
+        if i < n_l2:
+            Mc = _local_target_moment_correction(
+                M.to(dtype=dtype),
+                tgt_index,
+                n_tgt,
+                moment_coef2,
+                moment_ridge=moment2_ridge,
+            )
+            M = M + float(moment2_relax) * (Mc.to(dtype=M.dtype) - M)
+            M = project(
+                M,
+                src_index,
+                tgt_index,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                eps_rel=eps_rel,
+                n_cg=n_cg,
+                tol=tol,
+                solve_dtype=solve_dtype,
+            )
+        if i < n_l3:
+            Mc = _local_target_moment_correction(
+                M.to(dtype=dtype),
+                tgt_index,
+                n_tgt,
+                moment_coef3,
+                moment_ridge=moment3_ridge,
+            )
+            M = M + float(moment3_relax) * (Mc.to(dtype=M.dtype) - M)
+            M = project(
+                M,
+                src_index,
+                tgt_index,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                eps_rel=eps_rel,
+                n_cg=n_cg,
+                tol=tol,
+                solve_dtype=solve_dtype,
+            )
+    return M
