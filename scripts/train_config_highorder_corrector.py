@@ -181,6 +181,27 @@ def op_loss_fn(S, S_np2, insupp, rel):
     return l, op_in.detach()
 
 
+def base_safe_loss_fn(S, S0, S_np2, insupp, rel, improve_rel=0.0):
+    """Penalize correction directions that are worse than the frozen base.
+
+    This is a base-relative hinge, not another target loss.  It is zero on
+    edges where the corrected squared error is at least ``improve_rel`` better
+    than the base squared error, and positive where the correction gives back
+    base quality.
+    """
+    insup = insupp
+    if not bool(insup.any()):
+        return S.new_zeros(())
+    corrected = (S[insup] - S_np2[insup]) ** 2
+    base = (S0.detach()[insup] - S_np2[insup]) ** 2
+    target = base * max(0.0, 1.0 - float(improve_rel))
+    loss = torch.clamp(corrected - target, min=0.0).mean()
+    if rel:
+        denom = (S_np2[insup] ** 2).mean().clamp_min(1e-12)
+        loss = loss / denom
+    return loss
+
+
 def moment_loss_fn(S, si, ti, sxyz, txyz, atgt, n_tgt):
     num = S.new_zeros(()); den = S.new_zeros(())
     for d in range(3):
@@ -209,6 +230,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--bands", type=int, nargs="+", default=[8, 16, 24])
     ap.add_argument("--alpha", type=float, default=0.2, help="per-step log-multiplier step size (bounded by tanh)")
+    ap.add_argument("--step-alphas", type=float, nargs="+", default=None,
+                    help="optional per-band step sizes; e.g. 0.15 0.08 0.04 for a damped 3-band corrector")
     ap.add_argument("--lmax-denom", type=float, default=32.0)
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--rounds", type=int, default=1, help="message-passing rounds for the corrector")
@@ -219,7 +242,23 @@ def main():
     ap.add_argument("--lam-moment", type=float, default=1e4, help="deg-1 linear-reproduction penalty per step")
     ap.add_argument("--lam-keep", type=float, default=0.01, help="drift-from-previous-step penalty (contraction)")
     ap.add_argument("--lam-delta", type=float, default=1e-4, help="small-step penalty on the bounded delta")
+    ap.add_argument("--lam-base-safe", type=float, default=0.0,
+                    help="base-relative hinge penalty; discourages corrected edges that are worse than base")
+    ap.add_argument("--base-safe-improve-rel", type=float, default=0.0,
+                    help="relative improvement required before the base-safe hinge is zero")
     ap.add_argument("--rel-op", action="store_true", help="relative (scale-free) operator-edge loss")
+    ap.add_argument("--val-score-moment-weight", type=float, default=0.0,
+                    help="checkpoint score adds this times validation moment loss")
+    ap.add_argument("--val-score-degrade-weight", type=float, default=0.0,
+                    help="checkpoint score adds this times max(0, corrected_val_op - base_val_op*(1+tol))")
+    ap.add_argument("--val-score-degrade-tol", type=float, default=0.0,
+                    help="relative tolerance before applying the validation base-degradation penalty")
+    ap.add_argument("--require-val-improvement", action="store_true",
+                    help="only select checkpoints whose mean validation operator loss beats the frozen base")
+    ap.add_argument("--val-improve-rel", type=float, default=0.0,
+                    help="required relative validation improvement over base when --require-val-improvement is set")
+    ap.add_argument("--zero-init-delta-head", action="store_true",
+                    help="initialize the corrector edge_logit head to zero so the first rollout is identity-like")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
 
@@ -249,13 +288,22 @@ def main():
                             hidden=int(pack.get("hidden", 128)),
                             decoder_chunk_size=int(pack.get("decoder_chunk_size", 10000))).to(device)
     corrector.num_rounds = args.rounds
+    if args.zero_init_delta_head and hasattr(corrector, "edge_logit"):
+        torch.nn.init.zeros_(corrector.edge_logit.weight)
+        torch.nn.init.zeros_(corrector.edge_logit.bias)
     opt = torch.optim.AdamW(corrector.parameters(), lr=args.lr, weight_decay=1e-5)
 
     bands = list(args.bands)
-    print("bands:", bands, " alpha:", args.alpha, " scale:", base_scale, " rounds:", args.rounds,
+    if args.step_alphas is not None:
+        if len(args.step_alphas) != len(bands):
+            raise ValueError(f"--step-alphas length {len(args.step_alphas)} must match --bands length {len(bands)}")
+        alpha_schedule = [float(x) for x in args.step_alphas]
+    else:
+        alpha_schedule = float(args.alpha)
+    print("bands:", bands, " alpha:", alpha_schedule, " scale:", base_scale, " rounds:", args.rounds,
           " n_cg:", args.n_cg, " base:", args.base_pack)
 
-    tr = cfg.training if hasattr(cfg, "training") else {}
+    tr = cfg.raw.get("training", {}) if hasattr(cfg, "raw") else (cfg.training if hasattr(cfg, "training") else {})
     train_pairs = list(getattr(cfg, "pairs", []))
     train_pairs = list(tr.get("train_pairs", train_pairs)) if isinstance(tr, dict) else train_pairs
     if args.pairs:
@@ -313,6 +361,8 @@ def main():
 
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(args.epochs, 1))
     best = float("inf"); best_state = None
+    best_any = float("inf"); best_any_state = None
+    best_hard_ok = False
     K = len(bands)
 
     for epoch in range(1, args.epochs + 1):
@@ -325,7 +375,7 @@ def main():
             asrc, atgt = b["area_src"].float(), b["area_tgt"].float()
             scale_den = (c["S_np2"][c["insupp"]] ** 2).mean().clamp_min(1e-20) if bool(c["insupp"].any()) else atgt.new_ones(())
             opt.zero_grad(set_to_none=True)
-            S0, steps, _ = run_corrector_steps(base_model, corrector, b, bands, args.alpha, base_scale,
+            S0, steps, _ = run_corrector_steps(base_model, corrector, b, bands, alpha_schedule, base_scale,
                                                args.n_cg, args.lmax_denom, w0=c["w0"], M_base=c["M_base"])
             total = atgt.new_zeros(())
             final_op_in = None; last_M = None
@@ -341,9 +391,17 @@ def main():
                 S_prev = S0 if k == 1 else steps[k - 2][0]
                 keep = ((S_k - S_prev.detach()) ** 2).mean() / scale_den
                 dloss = (bd_k ** 2).mean()
+                base_safe = base_safe_loss_fn(
+                    S_k,
+                    S0,
+                    c["S_np2"],
+                    c["insupp"],
+                    rel=args.rel_op,
+                    improve_rel=args.base_safe_improve_rel,
+                )
                 op_w = args.lam_op if is_final else args.lam_step_op
                 total = total + op_w * op + args.lam_field * h_loss + args.lam_moment * mom \
-                    + args.lam_keep * keep + args.lam_delta * dloss
+                    + args.lam_keep * keep + args.lam_delta * dloss + args.lam_base_safe * base_safe
                 if is_final:
                     final_op_in = float(op_in); ep_mom.append(float(mom)); ep_drms.append(float(dloss.sqrt()))
                     last_M = M_k
@@ -360,37 +418,82 @@ def main():
         corrector.eval()
         with torch.no_grad():
             vops = []
+            vmoms = []
+            vbase_ops = []
+            vdegrades = []
+            vscores = []
             for pair in val_pairs:
                 cv = to_device(valcache[pair]); bv = cv["b"]
-                _, vsteps, _ = run_corrector_steps(base_model, corrector, bv, bands, args.alpha, base_scale,
+                S0v, vsteps, _ = run_corrector_steps(base_model, corrector, bv, bands, alpha_schedule, base_scale,
                                                    args.n_cg, args.lmax_denom, w0=cv["w0"], M_base=cv["M_base"])
                 Sv = vsteps[-1][0]
                 d = (Sv - cv["S_np2"]) ** 2
                 vm = cv["insupp"]
-                vops.append(float(d[vm].mean()) if bool(vm.any()) else 0.0)
-                del cv, bv, vsteps, Sv
+                val_op_pair = float(d[vm].mean()) if bool(vm.any()) else 0.0
+                d0 = (S0v - cv["S_np2"]) ** 2
+                base_op_pair = float(d0[vm].mean()) if bool(vm.any()) else 0.0
+                mom_pair_t = moment_loss_fn(Sv, bv["src_index"], bv["tgt_index"], cv["sxyz"], cv["txyz"],
+                                            bv["area_tgt"].float(), cv["n_tgt"])
+                mom_pair = float(mom_pair_t)
+                degrade_pair = max(0.0, val_op_pair - base_op_pair * (1.0 + float(args.val_score_degrade_tol)))
+                score_pair = (
+                    val_op_pair
+                    + float(args.val_score_moment_weight) * mom_pair
+                    + float(args.val_score_degrade_weight) * degrade_pair
+                )
+                vops.append(val_op_pair)
+                vmoms.append(mom_pair)
+                vbase_ops.append(base_op_pair)
+                vdegrades.append(degrade_pair)
+                vscores.append(score_pair)
+                del cv, bv, vsteps, Sv, S0v
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
             val_op = float(np.mean(vops)) if vops else float(np.mean(ep_op))
-        if val_op < best:
-            best = val_op
+            val_mom = float(np.mean(vmoms)) if vmoms else 0.0
+            val_base_op = float(np.mean(vbase_ops)) if vbase_ops else 0.0
+            val_degrade = float(np.mean(vdegrades)) if vdegrades else 0.0
+            val_score = float(np.mean(vscores)) if vscores else val_op
+        hard_ok = (
+            (not args.require_val_improvement)
+            or (val_base_op > 0.0 and val_op <= val_base_op * (1.0 - float(args.val_improve_rel)))
+        )
+        if val_score < best_any:
+            best_any = val_score
+            best_any_state = {k: v.detach().cpu().clone() for k, v in corrector.state_dict().items()}
+        if hard_ok and val_score < best:
+            best = val_score
             best_state = {k: v.detach().cpu().clone() for k, v in corrector.state_dict().items()}
-        print("epoch %04d  train_op=%.4e  val_op=%.4e (best %.4e)  mom=%.4e  drms=%.3f  cons=%.2e row=%.2e"
-              % (epoch, float(np.mean(ep_op)), val_op, best,
+            best_hard_ok = True
+        best_print = best if best_state is not None else best_any
+        print("epoch %04d  train_op=%.4e  val_score=%.4e (best %.4e)  hard_ok=%s  val_op=%.4e base_op=%.4e val_mom=%.4e val_deg=%.4e  mom=%.4e  drms=%.3f  cons=%.2e row=%.2e"
+              % (epoch, float(np.mean(ep_op)), val_score, best_print,
+                 str(bool(hard_ok)),
+                 val_op, val_base_op, val_mom, val_degrade,
                  (float(np.mean(ep_mom)) if ep_mom else 0.0),
                  (float(np.mean(ep_drms)) if ep_drms else 0.0), cr, rr))
 
     if best_state is not None:
         corrector.load_state_dict(best_state)
+    elif best_any_state is not None:
+        print("WARNING: no checkpoint satisfied the hard validation-improvement gate; saving best score fallback")
+        corrector.load_state_dict(best_any_state)
     torch.save(dict(
         kind="highorder_corrector",
         model_state_dict={k: v.detach().cpu() for k, v in corrector.state_dict().items()},
         architecture=pack.get("architecture", cfg.architecture), hidden=int(pack.get("hidden", 128)),
         decoder_chunk_size=int(pack.get("decoder_chunk_size", 10000)),
         src_node_features=sf, tgt_node_features=tf, edge_features=ef, stats=stats,
-        scale=base_scale, rounds=args.rounds, bands=bands, alpha=args.alpha, lmax_denom=args.lmax_denom,
+        scale=base_scale, rounds=args.rounds, bands=bands, alpha=args.alpha,
+        step_alphas=([float(x) for x in args.step_alphas] if args.step_alphas is not None else None),
+        lmax_denom=args.lmax_denom,
+        lam_base_safe=float(args.lam_base_safe),
+        base_safe_improve_rel=float(args.base_safe_improve_rel),
+        require_val_improvement=bool(args.require_val_improvement),
+        val_improve_rel=float(args.val_improve_rel),
+        best_hard_ok=bool(best_hard_ok),
         n_cg=args.n_cg, base_pack=str(args.base_pack), train_pairs=train_pairs), args.out)
-    print("wrote", args.out, "best_val_op=%.4e" % best)
+    print("wrote", args.out, "best_val_score=%.4e best_hard_ok=%s" % (best_print, best_hard_ok))
     print("HIGHORDER_CORRECTOR_TRAIN_DONE")
 
 

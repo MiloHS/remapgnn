@@ -100,9 +100,7 @@
     "lambda_neg_s": 0.05,
     "lambda_bce": 0.05,
     "checkpoint_pairs": [
-      "ICOD-r32_to_RLL-r90-180",
-      "ICO-r32_to_CS-r32",
-      "ICOD-r32_to_ICO-r32"
+      "ICOD-r32_to_RLL-r90-180"
     ],
     "checkpoint_score": {
       "metric": "mean_guardrail_spectral_shells",

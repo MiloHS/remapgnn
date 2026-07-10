@@ -41,3 +41,8 @@ archive/
 
 # Ignore generated analysis outputs by default
 analysis_medium_improv/*
+
+# ESMF logs + scratch
+PET*.Log
+tmp/
+docs/SESSION_HANDOFF.md

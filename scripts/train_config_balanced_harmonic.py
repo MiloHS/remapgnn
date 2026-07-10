@@ -217,6 +217,40 @@ def build_harmonic_fields_with_truth(cfg, pair: str, n_src: int, n_tgt: int, deg
     return torch.from_numpy(s), torch.from_numpy(t)
 
 
+def build_harmonic_fields_with_truth_cellavg(cfg, pair: str, n_src: int, n_tgt: int, degrees,
+                                             modes_per_degree: int, seed: int, quad_m: int = 8):
+    """Finite-volume analog of build_harmonic_fields_with_truth: SAME (l,m) modes (same rng
+    seed + choose_m_values) and SAME source-RMS normalization, but source field and target
+    truth are per-cell AVERAGES <Y>_cell over the cell polygons (quadrature via
+    remapgnn.fv_moments), not point values at cell centers.  Used so the dominant spectral
+    (h_loss) target matches a finite-volume cell-average operator instead of fighting it."""
+    from remapgnn import fv_moments as fv
+    rng = np.random.default_rng(seed + _stable_pair_seed(pair) % 1000000)
+    src_xyz = read_source_xyz_from_edges(cfg.edge_path(pair), n_src=n_src)
+    tgt_xyz = read_target_xyz_from_edges(cfg.edge_path(pair), n_tgt=n_tgt)
+    mp = str(cfg.maps_dir / f"map_{pair}_conserve.nc")
+    qsrc = fv.grid_quadrature(mp, "a", m=quad_m, expected_centers=src_xyz)
+    qtgt = fv.grid_quadrature(mp, "b", m=quad_m, expected_centers=tgt_xyz)
+
+    src_fields, tgt_fields = [], []
+    for l in degrees:
+        for m in choose_m_values(l, modes_per_degree, rng):
+            fn = (lambda xyz, l=l, m=m: fv.real_sph_unnorm_fast(l, m, xyz))
+            ys = fv.grid_cell_average(fn, qsrc)
+            yt = fv.grid_cell_average(fn, qtgt)
+            norm = np.sqrt(np.mean(ys * ys))  # normalize BOTH by the source cell-avg RMS
+            if norm > 0:
+                ys = ys / norm
+                yt = yt / norm
+            src_fields.append(ys.astype("float32"))
+            tgt_fields.append(yt.astype("float32"))
+
+    s = np.stack(src_fields, axis=0).astype("float32")
+    t = np.stack(tgt_fields, axis=0).astype("float32")
+    print(f"  harmonic+truth(cellavg m={quad_m}) cache {pair}: {s.shape[0]} fields, degrees={degrees}")
+    return torch.from_numpy(s), torch.from_numpy(t)
+
+
 def model_outputs_to_q(out):
     if isinstance(out, dict):
         edge_logit = out.get("edge_logit", out.get("logit"))

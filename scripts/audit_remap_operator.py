@@ -48,8 +48,11 @@ from train_config_balanced_harmonic import (
     build_harmonic_fields_with_truth,
     read_source_xyz_from_edges,
     read_target_xyz_from_edges,
+    choose_m_values,
+    _stable_pair_seed,
 )
-from train_config_highorder import operator_from_model
+from remapgnn import fv_moments as fv
+from train_config_highorder import operator_from_model, quadratic_moment_coef
 from train_config_highorder_corrector import run_corrector_steps
 from train_config_irno_corrector import as_int, torch_load_pack
 from evaluate_refinement_convergence import analytic_function
@@ -277,6 +280,36 @@ def build_tempest_operator(cfg, pair: str, order: str) -> SparseOperator:
     )
 
 
+def build_esmf_operator(cfg, pair: str, method: str) -> SparseOperator:
+    """Load an ESMF baseline weight file (SCRIP format, same schema as TR maps).
+    method in {bilinear, conserve, conserve2nd}. Path: map_<pair>_esmf_<method>.nc."""
+    path = cfg.maps_dir / f"map_{pair}_esmf_{method}.nc"
+    t0 = time.perf_counter()
+    S, si, ti, _asrc, _atgt = load_map_arrays(path)
+    elapsed = time.perf_counter() - t0
+    # ESMF bilinear weight files carry zero/absent cell areas -> take the TRUE areas from the
+    # conserve (np1) map (same cells/ordering) so the area-weighted metric is correct and
+    # consistent across all operators (conserve/conserve2nd areas are identical anyway).
+    _s, _si, _ti, asrc, atgt = load_map_arrays(cfg.maps_dir / f"map_{pair}_conserve.nc")
+    M = S * atgt[ti]
+    return SparseOperator(
+        label=f"esmf_{method}",
+        family="esmf",
+        pair=pair,
+        src_index=si,
+        tgt_index=ti,
+        S=S,
+        M=M,
+        src_area=asrc,
+        tgt_area=atgt,
+        n_src=len(asrc),
+        n_tgt=len(atgt),
+        n_edges=len(S),
+        elapsed_s=elapsed,
+        graph_suffix="esmf",
+    )
+
+
 def build_learned_sparse_operator(
     op: LearnedOperator,
     pair: str,
@@ -327,6 +360,51 @@ def build_learned_sparse_operator(
             )
             S_t, M_t = steps[-1][0], steps[-1][1]
         else:
+            moment_mode = op.pack.get("moment_mode") or (
+                "local_soft_l2" if bool(op.pack.get("moment_l2_local_soft", False))
+                else "local_soft" if bool(op.pack.get("moment_l1_local_soft", False))
+                else ("hard" if bool(op.pack.get("moment_l1_hard", False)) else "none")
+            )
+            moment_mode = str(moment_mode)
+            moment_geometry = str(op.pack.get("moment_geometry", "center"))
+            moment_coef = None
+            moment_coef2 = None
+            moment_coef3 = None
+            if moment_mode != "none":
+                sx = read_source_xyz_from_edges(op.cfg.edge_path(pair), n_src)
+                tx = read_target_xyz_from_edges(op.cfg.edge_path(pair), n_tgt)
+                if moment_geometry == "fv":
+                    # inference must use the SAME finite-volume cell-average moments the model
+                    # was trained with, else the projection targets the wrong (point) moments.
+                    quad_m = int(op.pack.get("quad_m", 8))
+                    mp = str(op.cfg.maps_dir / f"map_{pair}_conserve.nc")
+                    Vs, nvs, _, cas = fv.load_corners_from_map(mp, "a")
+                    Vt, nvt, _, cat = fv.load_corners_from_map(mp, "b")
+                    if float(np.abs(cas - sx).max()) > 1e-6 or float(np.abs(cat - tx).max()) > 1e-6:
+                        raise ValueError(f"FV cell-order mismatch for {pair} (map vs edge dataset)")
+                    cubic = moment_mode == "local_soft_l3"
+                    ms = fv.compute_grid_moments(Vs, nvs, m=quad_m, cubic=cubic)
+                    mt = fv.compute_grid_moments(Vt, nvt, m=quad_m, cubic=cubic)
+                    cs1 = torch.tensor(ms["coord"], dtype=torch.float32, device=device)
+                    ct1 = torch.tensor(mt["coord"], dtype=torch.float32, device=device)
+                    moment_coef = cs1[si_t] - ct1[ti_t]
+                    if moment_mode in ("local_soft_l2", "local_soft_l3"):
+                        cs2 = torch.tensor(ms["quad"], dtype=torch.float32, device=device)
+                        ct2 = torch.tensor(mt["quad"], dtype=torch.float32, device=device)
+                        moment_coef2 = cs2[si_t] - ct2[ti_t]
+                    if moment_mode == "local_soft_l3":
+                        cs3 = torch.tensor(ms["cubic"], dtype=torch.float32, device=device)
+                        ct3 = torch.tensor(mt["cubic"], dtype=torch.float32, device=device)
+                        moment_coef3 = cs3[si_t] - ct3[ti_t]
+                else:
+                    sxyz_t = torch.tensor(sx, dtype=torch.float32, device=device)
+                    txyz_t = torch.tensor(tx, dtype=torch.float32, device=device)
+                    moment_coef = (
+                        sxyz_t[si_t]
+                        - txyz_t[ti_t]
+                    )
+                    if moment_mode == "local_soft_l2":
+                        moment_coef2 = quadratic_moment_coef(sxyz_t, txyz_t, si_t, ti_t)
             S_t, M_t = operator_from_model(
                 op.model,
                 b,
@@ -339,6 +417,20 @@ def build_learned_sparse_operator(
                 n_cg=int(base_n_cg if base_n_cg is not None else op.pack.get("n_cg", 400)),
                 solve_dtype=projection_dtype,
                 eps_rel=projection_eps_rel,
+                moment_coef=moment_coef,
+                moment_mode=moment_mode,
+                moment_ridge=float(op.pack.get("moment_ridge", 1.0e-4)),
+                moment_relax=float(op.pack.get("moment_relax", 1.0)),
+                moment_iters=int(op.pack.get("moment_iters", 1)),
+                moment_coef2=moment_coef2,
+                moment2_ridge=float(op.pack.get("moment2_ridge", 1.0e-3)),
+                moment2_relax=float(op.pack.get("moment2_relax", 0.5)),
+                moment2_iters=int(op.pack.get("moment2_iters", 1)),
+                moment_coef3=moment_coef3,
+                moment3_ridge=float(op.pack.get("moment3_ridge", 1.0e-2)),
+                moment3_relax=float(op.pack.get("moment3_relax", 0.5)),
+                moment3_iters=int(op.pack.get("moment3_iters", 0)),
+                implicit_projection=bool(op.pack.get("implicit_projection", False)),
             )
 
     elapsed = time.perf_counter() - t0
@@ -378,6 +470,50 @@ def analytic_src_truth(name: str, src_xyz: np.ndarray, tgt_xyz: np.ndarray) -> t
             tgt = tgt / nrm
         return src.astype(np.float64), tgt.astype(np.float64)
     return analytic_function(name, src_xyz), analytic_function(name, tgt_xyz)
+
+
+def _analytic_callable(name: str):
+    """Return f(xyz[N,3])->[N] for an analytic-function or Y_l_m name."""
+    if name.startswith("Y_"):
+        _, l_s, m_s = name.split("_")
+        l, m = int(l_s), int(m_s)
+        return lambda xyz: fv.real_sph_unnorm_fast(l, m, xyz)   # fast; == scipy up to global const
+    return lambda xyz: analytic_function(name, xyz)
+
+
+def analytic_src_truth_cellavg(name, qsrc, qtgt):
+    """Cell-average (finite-volume) analog of analytic_src_truth: source field and target
+    truth are per-cell AVERAGES over the cell polygons (quadrature), not point values at
+    centers.  Same source-RMS normalization for Y_ fields (scale-invariant for the metric)."""
+    fn = _analytic_callable(name)
+    src = fv.grid_cell_average(fn, qsrc)
+    tgt = fv.grid_cell_average(fn, qtgt)
+    if name.startswith("Y_"):
+        nrm = float(np.sqrt(np.mean(src * src)))
+        if nrm > 0.0:
+            src = src / nrm
+            tgt = tgt / nrm
+    return src.astype(np.float64), tgt.astype(np.float64)
+
+
+def cellavg_harmonic_shells(pair, degrees, modes_per_degree, seed, qsrc, qtgt):
+    """Cell-average analog of build_harmonic_fields_with_truth: SAME (l,m) mode selection
+    (same rng seed + choose_m_values) but per-cell averages, so point/cellavg shells cover
+    identical modes.  Returns (src_fields[nf,n_src], tgt_fields[nf,n_tgt]) float64."""
+    rng = np.random.default_rng(seed + _stable_pair_seed(pair) % 1000000)
+    sfs, tfs = [], []
+    for l in degrees:
+        for m in choose_m_values(l, modes_per_degree, rng):
+            fn = (lambda xyz, l=l, m=m: fv.real_sph_unnorm_fast(l, m, xyz))
+            ys = fv.grid_cell_average(fn, qsrc)
+            yt = fv.grid_cell_average(fn, qtgt)
+            nrm = float(np.sqrt(np.mean(ys * ys)))
+            if nrm > 0.0:
+                ys = ys / nrm
+                yt = yt / nrm
+            sfs.append(ys)
+            tfs.append(yt)
+    return np.stack(sfs, axis=0).astype(np.float64), np.stack(tfs, axis=0).astype(np.float64)
 
 
 def read_flat_field(path: Path, field: str) -> np.ndarray:
@@ -781,6 +917,8 @@ def main():
     ap.add_argument("--modes-per-degree", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--include-tempest", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--include-esmf", action=argparse.BooleanOptionalAction, default=True,
+                    help="load ESMF baseline maps map_<pair>_esmf_{bilinear,conserve,conserve2nd}.nc when present")
     ap.add_argument("--base-n-cg", type=int, default=None,
                     help="override projection CG iterations for learned base packs")
     ap.add_argument("--corrector-n-cg", type=int, default=None,
@@ -789,6 +927,11 @@ def main():
                     help="dtype used inside learned-operator projection solves")
     ap.add_argument("--projection-eps-rel", type=float, default=1e-9,
                     help="relative ridge used inside learned-operator projection solves")
+    ap.add_argument("--truth-mode", choices=["point", "cellavg"], default="point",
+                    help="analytic/spectral truth: point value at cell centers (legacy) or "
+                         "finite-volume cell averages via per-cell quadrature (correct for FV remap)")
+    ap.add_argument("--quad-m", type=int, default=8,
+                    help="barycentric subdivisions per fan triangle for cell-average quadrature")
     ap.add_argument("--device", default=None)
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()
@@ -802,6 +945,7 @@ def main():
     print("device:", device)
     print("projection_dtype:", args.projection_dtype)
     print("projection_eps_rel:", args.projection_eps_rel)
+    print("truth_mode:", args.truth_mode, "(quad_m=%d)" % args.quad_m if args.truth_mode == "cellavg" else "")
     print("out_dir:", out_dir)
 
     learned_ops = [
@@ -845,6 +989,19 @@ def main():
         except Exception as e:
             print(f"  geometry warning: {e}")
 
+        # Finite-volume cell-average truth: per-cell quadrature over the source/target cell
+        # polygons (corners from the conserve map file), aligned to the edge-dataset ordering.
+        qsrc = qtgt = None
+        if args.truth_mode == "cellavg" and src_xyz is not None:
+            try:
+                map_path = default_cfg.maps_dir / f"map_{pair}_conserve.nc"
+                qsrc = fv.grid_quadrature(map_path, "a", m=args.quad_m, expected_centers=src_xyz)
+                qtgt = fv.grid_quadrature(map_path, "b", m=args.quad_m, expected_centers=tgt_xyz)
+                print(f"  cellavg quadrature ready (m={args.quad_m})")
+            except Exception as e:
+                print(f"  cellavg geometry warning ({pair}): {e} -> falling back to point truth")
+                qsrc = qtgt = None
+
         sparse_ops: list[SparseOperator] = []
         if args.include_tempest:
             for order in ["np1", "np2"]:
@@ -853,6 +1010,17 @@ def main():
                 except Exception as e:
                     print(f"  skip {order}: {e}")
                     skips.append({"pair": pair, "operator": order, "field": "*operator*", "reason": str(e)})
+
+        if args.include_esmf:
+            for method in ["bilinear", "conserve", "conserve2nd"]:
+                mp = default_cfg.maps_dir / f"map_{pair}_esmf_{method}.nc"
+                if not mp.exists():
+                    continue
+                try:
+                    sparse_ops.append(build_esmf_operator(default_cfg, pair, method))
+                except Exception as e:
+                    print(f"  skip esmf_{method}: {e}")
+                    skips.append({"pair": pair, "operator": f"esmf_{method}", "field": "*operator*", "reason": str(e)})
 
         for lop in learned_ops:
             try:
@@ -921,7 +1089,10 @@ def main():
 
         for fn in args.functions:
             try:
-                src_field, truth = analytic_src_truth(fn, src_xyz, tgt_xyz)
+                if args.truth_mode == "cellavg" and qsrc is not None:
+                    src_field, truth = analytic_src_truth_cellavg(fn, qsrc, qtgt)
+                else:
+                    src_field, truth = analytic_src_truth(fn, src_xyz, tgt_xyz)
             except Exception as e:
                 print(f"  skip analytic {fn}: {e}")
                 skips.append({"pair": pair, "operator": "*all*", "field": fn, "reason": str(e)})
@@ -971,17 +1142,21 @@ def main():
                 )
 
         for shell_i, degs in enumerate(shells):
-            sf_t, tf_t = build_harmonic_fields_with_truth(
-                geom_cfg,
-                pair,
-                n_src_geom,
-                n_tgt_geom,
-                degs,
-                args.modes_per_degree,
-                args.seed + 97 * shell_i,
-            )
-            sf = sf_t.numpy().astype(np.float64)
-            tf = tf_t.numpy().astype(np.float64)
+            if args.truth_mode == "cellavg" and qsrc is not None:
+                sf, tf = cellavg_harmonic_shells(
+                    pair, degs, args.modes_per_degree, args.seed + 97 * shell_i, qsrc, qtgt)
+            else:
+                sf_t, tf_t = build_harmonic_fields_with_truth(
+                    geom_cfg,
+                    pair,
+                    n_src_geom,
+                    n_tgt_geom,
+                    degs,
+                    args.modes_per_degree,
+                    args.seed + 97 * shell_i,
+                )
+                sf = sf_t.numpy().astype(np.float64)
+                tf = tf_t.numpy().astype(np.float64)
             label = f"l{degs[0]}-{degs[-1]}"
             for op in sparse_ops:
                 if sf.shape[1] != op.n_src or tf.shape[1] != op.n_tgt:

@@ -50,6 +50,19 @@ def parse_projection_dtype(name: str):
     raise ValueError(f"unknown projection dtype {name!r}; expected float32 or float64")
 
 
+def checkpoint_moment_mode(pack: dict) -> str:
+    mode = pack.get("moment_mode")
+    if mode:
+        return str(mode)
+    if bool(pack.get("moment_l2_local_soft", False)):
+        return "local_soft_l2"
+    if bool(pack.get("moment_l1_local_soft", False)):
+        return "local_soft"
+    if bool(pack.get("moment_l1_hard", False)):
+        return "hard"
+    return "none"
+
+
 def model_outputs_to_q(out):
     import torch
 
@@ -101,10 +114,16 @@ def build_operator(
     n_cg: int,
     projection_dtype,
     projection_eps_rel: float,
+    moment_coef=None,
+    moment_coef2=None,
 ):
     import torch
     from remapgnn.models import scatter_sum_torch
-    from remapgnn.projection import doubly_constrained_project
+    from remapgnn.projection import (
+        doubly_constrained_project,
+        doubly_constrained_project_implicit,
+        doubly_constrained_project_local_moment,
+    )
 
     si = batch["src_index"]
     ti = batch["tgt_index"]
@@ -131,18 +150,44 @@ def build_operator(
         scale = float(pack.get("scale", 1.0))
         w = edge_logit.float() if signed else raw_weight.float()
         q = M_base * (1.0 + scale * w)
-        M = doubly_constrained_project(
-            q,
-            si,
-            ti,
-            area_src,
-            area_tgt,
-            n_src,
-            n_tgt,
-            eps_rel=projection_eps_rel,
-            n_cg=n_cg,
-            solve_dtype=projection_dtype,
-        )
+        moment_mode = checkpoint_moment_mode(pack)
+        if moment_mode in ("local_soft", "local_soft_l2"):
+            M = doubly_constrained_project_local_moment(
+                q,
+                si,
+                ti,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                eps_rel=projection_eps_rel,
+                n_cg=n_cg,
+                solve_dtype=projection_dtype,
+                moment_coef=moment_coef,
+                moment_ridge=float(pack.get("moment_ridge", 1.0e-4)),
+                moment_relax=float(pack.get("moment_relax", 1.0)),
+                moment_iters=int(pack.get("moment_iters", 1)),
+                moment_coef2=(moment_coef2 if moment_mode == "local_soft_l2" else None),
+                moment2_ridge=float(pack.get("moment2_ridge", 1.0e-3)),
+                moment2_relax=float(pack.get("moment2_relax", 0.5)),
+                moment2_iters=int(pack.get("moment2_iters", 1)),
+                use_implicit=bool(pack.get("implicit_projection", False)),
+            )
+        else:
+            project = doubly_constrained_project_implicit if bool(pack.get("implicit_projection", False)) else doubly_constrained_project
+            M = project(
+                q,
+                si,
+                ti,
+                area_src,
+                area_tgt,
+                n_src,
+                n_tgt,
+                eps_rel=projection_eps_rel,
+                n_cg=n_cg,
+                solve_dtype=projection_dtype,
+                moment_coef=(moment_coef if moment_mode == "hard" else None),
+            )
         S = M / torch.clamp(area_tgt.to(dtype=M.dtype)[ti], min=1.0e-30)
     elapsed_s = time.perf_counter() - t0
     return S, M, elapsed_s
@@ -166,6 +211,67 @@ def zero_degree_counts(si: np.ndarray, ti: np.ndarray, n_src: int, n_tgt: int):
     src_deg = np.bincount(si, minlength=n_src)
     tgt_deg = np.bincount(ti, minlength=n_tgt)
     return int(np.sum(src_deg == 0)), int(np.sum(tgt_deg == 0))
+
+
+def read_moment_coef_from_edge_parquet(edge_path: Path, batch: dict, device):
+    import pandas as pd
+    import torch
+
+    si = batch["src_index"]
+    ti = batch["tgt_index"]
+    n_src = int(batch["n_src"])
+    n_tgt = int(batch["n_tgt"])
+    cols = ["source_index", "target_index", "src_x", "src_y", "src_z", "tgt_x", "tgt_y", "tgt_z"]
+    df = pd.read_parquet(edge_path, columns=cols)
+
+    src_g = df.groupby("source_index", sort=False)[["src_x", "src_y", "src_z"]].first()
+    tgt_g = df.groupby("target_index", sort=False)[["tgt_x", "tgt_y", "tgt_z"]].first()
+    src_xyz = np.full((n_src, 3), np.nan, dtype=np.float64)
+    tgt_xyz = np.full((n_tgt, 3), np.nan, dtype=np.float64)
+    src_xyz[src_g.index.to_numpy(dtype=np.int64)] = src_g.to_numpy(dtype=np.float64)
+    tgt_xyz[tgt_g.index.to_numpy(dtype=np.int64)] = tgt_g.to_numpy(dtype=np.float64)
+    if np.isnan(src_xyz).any() or np.isnan(tgt_xyz).any():
+        raise RuntimeError("edge parquet is missing source/target coordinates needed for hard moment projection")
+
+    return (
+        torch.tensor(src_xyz, dtype=torch.float32, device=device)[si]
+        - torch.tensor(tgt_xyz, dtype=torch.float32, device=device)[ti]
+    )
+
+
+def read_quadratic_moment_coef_from_edge_parquet(edge_path: Path, batch: dict, device):
+    import pandas as pd
+    import torch
+
+    si = batch["src_index"]
+    ti = batch["tgt_index"]
+    n_src = int(batch["n_src"])
+    n_tgt = int(batch["n_tgt"])
+    cols = ["source_index", "target_index", "src_x", "src_y", "src_z", "tgt_x", "tgt_y", "tgt_z"]
+    df = pd.read_parquet(edge_path, columns=cols)
+
+    src_g = df.groupby("source_index", sort=False)[["src_x", "src_y", "src_z"]].first()
+    tgt_g = df.groupby("target_index", sort=False)[["tgt_x", "tgt_y", "tgt_z"]].first()
+    src_xyz = np.full((n_src, 3), np.nan, dtype=np.float64)
+    tgt_xyz = np.full((n_tgt, 3), np.nan, dtype=np.float64)
+    src_xyz[src_g.index.to_numpy(dtype=np.int64)] = src_g.to_numpy(dtype=np.float64)
+    tgt_xyz[tgt_g.index.to_numpy(dtype=np.int64)] = tgt_g.to_numpy(dtype=np.float64)
+    if np.isnan(src_xyz).any() or np.isnan(tgt_xyz).any():
+        raise RuntimeError("edge parquet is missing source/target coordinates needed for quadratic moment projection")
+
+    src = torch.tensor(src_xyz, dtype=torch.float32, device=device)[si]
+    tgt = torch.tensor(tgt_xyz, dtype=torch.float32, device=device)[ti]
+    return torch.stack(
+        [
+            src[:, 0] * src[:, 0] - tgt[:, 0] * tgt[:, 0],
+            src[:, 0] * src[:, 1] - tgt[:, 0] * tgt[:, 1],
+            src[:, 0] * src[:, 2] - tgt[:, 0] * tgt[:, 2],
+            src[:, 1] * src[:, 1] - tgt[:, 1] * tgt[:, 1],
+            src[:, 1] * src[:, 2] - tgt[:, 1] * tgt[:, 2],
+            src[:, 2] * src[:, 2] - tgt[:, 2] * tgt[:, 2],
+        ],
+        dim=1,
+    )
 
 
 def write_npz(path: Path, arrays: dict, metadata: dict) -> None:
@@ -324,6 +430,14 @@ def main() -> None:
     n_tgt = int(batch["n_tgt"])
     n_edges = int(batch["n_edges"])
     print(f"n_src={n_src:,} n_tgt={n_tgt:,} n_edges={n_edges:,}")
+    moment_mode = checkpoint_moment_mode(pack)
+    moment_coef = None
+    moment_coef2 = None
+    if moment_mode != "none":
+        print(f"Using {moment_mode} moment projection from checkpoint metadata.")
+        moment_coef = read_moment_coef_from_edge_parquet(edge_path, batch, device)
+        if moment_mode == "local_soft_l2":
+            moment_coef2 = read_quadratic_moment_coef_from_edge_parquet(edge_path, batch, device)
 
     S_t, M_t, build_s = build_operator(
         model,
@@ -332,6 +446,8 @@ def main() -> None:
         n_cg=args.n_cg,
         projection_dtype=projection_dtype,
         projection_eps_rel=args.projection_eps_rel,
+        moment_coef=moment_coef,
+        moment_coef2=moment_coef2,
     )
 
     S = S_t.detach().cpu().numpy().astype(np.float64)
@@ -352,6 +468,16 @@ def main() -> None:
         "projection_dtype": args.projection_dtype,
         "projection_eps_rel": args.projection_eps_rel,
         "projection_n_cg": args.n_cg,
+        "moment_l1_hard": bool(pack.get("moment_l1_hard", False)),
+        "moment_l1_local_soft": bool(pack.get("moment_l1_local_soft", False)),
+        "moment_l2_local_soft": bool(pack.get("moment_l2_local_soft", False)),
+        "moment_mode": moment_mode,
+        "moment_ridge": float(pack.get("moment_ridge", 1.0e-4)),
+        "moment_relax": float(pack.get("moment_relax", 1.0)),
+        "moment_iters": int(pack.get("moment_iters", 1)),
+        "moment2_ridge": float(pack.get("moment2_ridge", 1.0e-3)),
+        "moment2_relax": float(pack.get("moment2_relax", 0.5)),
+        "moment2_iters": int(pack.get("moment2_iters", 1)),
         "operator_build_s": build_s,
         "n_src": n_src,
         "n_tgt": n_tgt,

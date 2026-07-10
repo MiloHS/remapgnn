@@ -25,8 +25,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from remapgnn.config import load_config
 from remapgnn.data import load_pair_tensors
 from remapgnn.models import build_model, scatter_sum_torch
-from remapgnn.projection import doubly_constrained_project_implicit
+from remapgnn.projection import (
+    doubly_constrained_project_implicit,
+    doubly_constrained_project_local_moment,
+)
 from train_config_balanced_harmonic import model_outputs_to_q, read_source_xyz_from_edges, read_target_xyz_from_edges
+from train_config_highorder import quadratic_moment_coef
 from train_config_highorder_corrector import base_w_and_geom, run_corrector_steps
 from train_config_irno_corrector import as_int, torch_load_pack
 
@@ -244,12 +248,49 @@ def learned_operator_arrays(
             S_t, M_t = steps[-1][0], steps[-1][1]
         else:
             q = base_q_and_geom(op, b, n_src, n_tgt, float(op.pack.get("scale", 1.0)))
-            M_t = doubly_constrained_project_implicit(
-                q, si_t, ti_t, asrc_t, atgt_t, n_src, n_tgt,
-                eps_rel=projection_eps_rel,
-                n_cg=int(n_cg),
-                solve_dtype=projection_dtype,
+            moment_mode = op.pack.get("moment_mode") or (
+                "local_soft_l2" if bool(op.pack.get("moment_l2_local_soft", False))
+                else "local_soft" if bool(op.pack.get("moment_l1_local_soft", False))
+                else ("hard" if bool(op.pack.get("moment_l1_hard", False)) else "none")
             )
+            moment_mode = str(moment_mode)
+            moment_coef = None
+            moment_coef2 = None
+            if moment_mode != "none":
+                sx = read_source_xyz_from_edges(op.cfg.edge_path(b["pair"]), n_src)
+                tx = read_target_xyz_from_edges(op.cfg.edge_path(b["pair"]), n_tgt)
+                sxyz_t = torch.tensor(sx, dtype=torch.float32, device=device)
+                txyz_t = torch.tensor(tx, dtype=torch.float32, device=device)
+                moment_coef = (
+                    sxyz_t[si_t]
+                    - txyz_t[ti_t]
+                )
+                if moment_mode == "local_soft_l2":
+                    moment_coef2 = quadratic_moment_coef(sxyz_t, txyz_t, si_t, ti_t)
+            if moment_mode in ("local_soft", "local_soft_l2"):
+                M_t = doubly_constrained_project_local_moment(
+                    q, si_t, ti_t, asrc_t, atgt_t, n_src, n_tgt,
+                    eps_rel=projection_eps_rel,
+                    n_cg=int(n_cg),
+                    solve_dtype=projection_dtype,
+                    moment_coef=moment_coef,
+                    moment_ridge=float(op.pack.get("moment_ridge", 1.0e-4)),
+                    moment_relax=float(op.pack.get("moment_relax", 1.0)),
+                    moment_iters=int(op.pack.get("moment_iters", 1)),
+                    moment_coef2=moment_coef2,
+                    moment2_ridge=float(op.pack.get("moment2_ridge", 1.0e-3)),
+                    moment2_relax=float(op.pack.get("moment2_relax", 0.5)),
+                    moment2_iters=int(op.pack.get("moment2_iters", 1)),
+                    use_implicit=True,
+                )
+            else:
+                M_t = doubly_constrained_project_implicit(
+                    q, si_t, ti_t, asrc_t, atgt_t, n_src, n_tgt,
+                    eps_rel=projection_eps_rel,
+                    n_cg=int(n_cg),
+                    solve_dtype=projection_dtype,
+                    moment_coef=(moment_coef if moment_mode == "hard" else None),
+                )
             S_t = M_t / torch.clamp(atgt_t[ti_t], min=1.0e-30)
     elapsed = time.perf_counter() - t0
     return (
