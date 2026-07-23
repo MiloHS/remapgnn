@@ -1,120 +1,104 @@
-# remapgnn
+# RemapGNN
 
-Learned conservative remapping operators for spherical climate meshes.
+Conservative remapping between spherical climate meshes.
 
-The project goal is not to beat mature offline remapping packages in every
-setting.  The goal is a reusable learned remap operator that is conservative,
-reasonably accurate, mesh-flexible, and faster than constructing a new
-high-order overlap/supermesh map when a cached map is not already available.
+## Start here
 
-## Current result
+The active implementation is `_next`. It consists of:
 
-The current default is:
-
-- model: `v12_geom_base`
-- weights: `models_medium_improv/highorder_signed_v12_geom_mom1e4.pt`
-- config: `configs/v20b_base_a3p0_mink8_geom_v12.json`
-- inference projection: float64 solve, `eps_rel=1e-12`, `n_cg=800`
-
-Short version:
-
-> `v12_geom_base` with the cleaned projection is conservative to about `2e-9`,
-> improves on earlier learned baselines on real fields, and is faster than
-> generating new TempestRemap `np2` maps/supermeshes at the tested r32/r64
-> resolutions.  It does not beat TempestRemap `np2` on accuracy, and it does
-> not beat cached Tempest maps on load/apply time.
-
-See [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md) for the numbers and
-recommended wording.
-
-## Use on a new mesh pair
-
-The current user-facing path is:
-
-1. build a k-distance candidate graph from source/target mesh files;
-2. run the v12 GNN and cleaned conservative projection;
-3. write a sparse remap operator;
-4. optionally apply it to a source field.
-
-Start with [`docs/INFERENCE.md`](docs/INFERENCE.md).
-
-The main command for the model/projection step is:
-
-```bash
-python scripts/build_remap_operator.py \
-  --config configs/v20b_base_a3p0_mink8_geom_v12.json \
-  --model models_medium_improv/highorder_signed_v12_geom_mom1e4.pt \
-  --edge-parquet work/graphs/edge_dataset_SRC_to_TGT_kdist_a3p0_mink8.parquet \
-  --pair SRC_to_TGT \
-  --out-map outputs/SRC_to_TGT_remapgnn_v12.nc
+```text
+frozen finite-volume base
+        ↓
+ordered conservative correction stages
+        ↓
+development and protected audits
 ```
 
-The current model weights should be distributed as a GitHub Release asset; see
-[`docs/MODEL_RELEASE.md`](docs/MODEL_RELEASE.md).
+I am currently developing the next high-band candidate, the previous version did not
+learn/correct enough.
 
-## Important artifacts
+Use the commands:
 
-Primary docs:
+```bash
+./next status
+./next test
+./next smoke
+./next train
+./next resume
+./next audit --pairs CS-r64_to_ICOD-r64 ICO-r32_to_CS-r32
+```
 
-- [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md)
-- [`docs/INFERENCE.md`](docs/INFERENCE.md)
-- [`docs/MODEL_LINEAGE.md`](docs/MODEL_LINEAGE.md)
-- [`docs/MODEL_RELEASE.md`](docs/MODEL_RELEASE.md)
+Run `./next help` for the complete command list.
 
-Local audit/benchmark outputs used to produce the summary docs:
+## Workflow
 
-- `analysis_medium_improv/audits/v12_expanded_realfields_nonico_f64_proj800_eps12/`
-- `analysis_medium_improv/audits/projection_sweep_v12_nonico_f64_eps12/`
-- `analysis_medium_improv/benchmarks/v12_clean_projection/`
-- `analysis_medium_improv/benchmarks/v12_clean_projection_r64/`
-- `analysis_medium_improv/benchmarks/tempest_generation_nonico/`
-- `analysis_medium_improv/benchmarks/tempest_generation_r64/`
+1. Check the active checkpoint:
 
-These generated outputs are ignored by default; the important numbers are
-copied into [`docs/CURRENT_RESULTS.md`](docs/CURRENT_RESULTS.md).
+   ```bash
+   ./next status
+   ```
 
-Primary scripts:
+2. After changing training settings, run the short two-phase check:
 
-- `scripts/build_external_kdist_graph.py`
-- `scripts/build_remap_operator.py`
-- `scripts/summarize_remap_output.py`
-- `scripts/visualize_remap_output.py`
-- `scripts/train_config_highorder.py`
-- `scripts/train_config_highorder_corrector.py`
-- `scripts/audit_remap_operator.py`
-- `scripts/sweep_projection_conservation.py`
-- `scripts/benchmark_remap_operator.py`
-- `scripts/benchmark_tempest_generation.py`
+   ```bash
+   ./next smoke
+   ```
 
-Cluster-specific jobs, logs, model weights, maps, and generated analysis outputs
-are ignored by default.  Model weights should be distributed through GitHub
-Releases, not committed to git.
+3. Train or resume the candidate:
 
-## Repository structure
+   ```bash
+   ./next train
+   ./next resume
+   ```
 
-- `remapgnn/` — package code
-- `scripts/` — public inference, training, audit, and benchmarking scripts
-- `configs/` — current public configs
-- `docs/` — current results, inference instructions, model lineage, and release notes
+4. Audit the completed candidate:
 
-## Current interpretation
+   ```bash
+   ./next audit-candidate
+   ```
 
-Keep:
+The cluster equivalents are:
 
-- geometric features and moment-aware training from `v12_geom_base`
-- the cleaned float64 projection for deployable conservation
-- the audit suite over real fields, analytic fields, spectral shells, and
-  Cartesian moments
-- the benchmark split between learned operator construction, cached-map
-  loading, and Tempest map generation
+- `jobs_next_train.pbs`
+- `jobs_next_audit.pbs`
 
-Do not claim:
+These jobs are intentionally not submitted automatically.
+Run `./next smoke` interactively when the capability/router/resume integration
+path needs a short check.
 
-- that the learned operator is more accurate than TempestRemap `np2`
-- that it is faster than using an already-cached Tempest map
+## Important files
 
-Reasonable paper/tool framing:
+- Active configuration: `_next/configs/progressive.json`
+- Development configuration: `_next/configs/high_band_candidate_01.json`
+- Approved clean checkpoint (gitignored): `_next/checkpoints/progressive.pt`
+- Frozen clean FV checkpoint (gitignored): `_next/checkpoints/fv_relax1.pt`
+- Detailed guide: `docs/ACTIVE_WORKFLOW.md`
+- Project history and current research direction: `docs/PROJECT_HISTORY.md`
+- Package architecture: `_next/README.md`
 
-> A conservative, supermesh-free learned remapping prototype that approaches
-> `np2` accuracy while reducing new-operator construction cost at the tested
-> resolutions.
+Large edge datasets, maps, and real fields remain in
+`analysis_medium_improv/`, `maps_medium_improv/`, and `data/` (gitignored).
+
+The model section of the configuration names an approved source checkpoint,
+the last frozen prefix stage, the train stage, and whether that stage starts
+fresh or from compatible clean checkpoint weights. Frozen prefix definitions
+must match exactly; structural stage changes automatically require fresh
+initialization.
+
+## Old implementation
+
+The historical `remapgnn/`, `scripts/`, versioned configs, and checkpoints are
+archived.
+
+A migration summary is stored in:
+
+```text
+_archive/legacy_progressive_2026-07-23/
+```
+
+The archive description is local only and is deliberately not part of GitHub.
+
+## Current research boundary
+
+The next task is improving the high-band correction training recipe.
+Later we will rebuild FV cleanly.

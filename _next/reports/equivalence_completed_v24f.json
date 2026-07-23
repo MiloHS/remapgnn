@@ -1,0 +1,254 @@
+{
+  "audit_metric_max_relative": 1.1807096456095678e-07,
+  "clean_checkpoint": {
+    "path": "_next/checkpoints/progressive.pt",
+    "sha256": "82ea246a65624c2471654e1e11165ef0dfbe40c811d388638183958cf00815ed"
+  },
+  "clean_fv_checkpoint": {
+    "path": "_next/checkpoints/fv_relax1.pt",
+    "sha256": "18df156b418835bbb6ece1bb3eb246156e7d58e48481778c68088bfe4b60efdc"
+  },
+  "column_residual_max": 7.263238836486295e-12,
+  "device": "cuda",
+  "first_stage_max_abs": 1.4901161193847656e-06,
+  "format": "remapgnn.clean_equivalence",
+  "fv_edge_order_exact": true,
+  "fv_mass_max_abs": 1.6861512186494565e-15,
+  "fv_resolutions": [
+    "healpix",
+    "r128",
+    "r32",
+    "r64"
+  ],
+  "fv_weight_max_abs": 2.1329049637586195e-12,
+  "legacy_checkpoint": {
+    "path": "models_medium_improv/fv_progressive_v24f.pt",
+    "sha256": "c58e2f30ab714e7b2d83cb8de1bea1094aa4608550405930394e8d6d9f771653"
+  },
+  "normalization_max_abs": 0.0,
+  "pairs": {
+    "CS-r128_to_ICOD-r128": {
+      "edge_order_exact": true,
+      "full_audit_panel": false,
+      "fv_mass_max_abs": 6.776263578034403e-21,
+      "fv_weight_max_abs": 0.0,
+      "model": {
+        "audit_metric_max_relative": 0.0,
+        "column_residual_max": 7.263238836486295e-12,
+        "final_max_abs": 4.76837158203125e-07,
+        "final_relative_linf": 9.561690461623584e-08,
+        "first_stage_max_abs": 4.76837158203125e-07,
+        "fv_output_max_abs": 0.0,
+        "row_residual_max": 7.632783294297951e-17
+      },
+      "panel": {
+        "checks": {
+          "families": true,
+          "frequency": true,
+          "labels": true,
+          "roles": true,
+          "source": true,
+          "target_mask": true,
+          "truth": true
+        },
+        "field_count": 4,
+        "frequency_max_abs": 0.0,
+        "passed": true,
+        "source_max_abs": 0.0,
+        "truth_max_abs": 0.0
+      },
+      "resolution": "r128",
+      "seconds": 643.5975539684296
+    },
+    "CS-r32_to_HP-n32": {
+      "edge_order_exact": true,
+      "full_audit_panel": false,
+      "fv_mass_max_abs": 1.6861512186494565e-15,
+      "fv_weight_max_abs": 1.6481260800560449e-12,
+      "model": {
+        "audit_metric_max_relative": 0.0,
+        "column_residual_max": 1.7122915024346715e-15,
+        "final_max_abs": 1.862645149230957e-09,
+        "final_relative_linf": 4.2539069489144765e-10,
+        "first_stage_max_abs": 4.76837158203125e-07,
+        "fv_output_max_abs": 1.862645149230957e-09,
+        "row_residual_max": 5.204170427930421e-17
+      },
+      "panel": {
+        "checks": {
+          "families": true,
+          "frequency": true,
+          "labels": true,
+          "roles": true,
+          "source": true,
+          "target_mask": true,
+          "truth": true
+        },
+        "field_count": 4,
+        "frequency_max_abs": 0.0,
+        "passed": true,
+        "source_max_abs": 0.0,
+        "truth_max_abs": 0.0
+      },
+      "resolution": "healpix",
+      "seconds": 18.41540837287903
+    },
+    "CS-r32_to_ICOD-r32": {
+      "edge_order_exact": true,
+      "full_audit_panel": false,
+      "fv_mass_max_abs": 1.5126788710517758e-15,
+      "fv_weight_max_abs": 1.8267609647182326e-12,
+      "model": {
+        "audit_metric_max_relative": 0.0,
+        "column_residual_max": 4.827665871062661e-15,
+        "final_max_abs": 1.3877787807814457e-17,
+        "final_relative_linf": 2.910942253778476e-18,
+        "first_stage_max_abs": 4.76837158203125e-07,
+        "fv_output_max_abs": 1.3877787807814457e-17,
+        "row_residual_max": 5.616167253474913e-17
+      },
+      "panel": {
+        "checks": {
+          "families": true,
+          "frequency": true,
+          "labels": true,
+          "roles": true,
+          "source": true,
+          "target_mask": true,
+          "truth": true
+        },
+        "field_count": 4,
+        "frequency_max_abs": 0.0,
+        "passed": true,
+        "source_max_abs": 0.0,
+        "truth_max_abs": 0.0
+      },
+      "resolution": "r32",
+      "seconds": 24.371346473693848
+    },
+    "CS-r64_to_ICOD-r64": {
+      "edge_order_exact": true,
+      "full_audit_panel": true,
+      "fv_mass_max_abs": 4.414871246360974e-16,
+      "fv_weight_max_abs": 2.1329049637586195e-12,
+      "model": {
+        "audit_metric_max_relative": 1.1329303362117571e-07,
+        "column_residual_max": 7.366000420802197e-15,
+        "final_max_abs": 4.76837158203125e-07,
+        "final_relative_linf": 1.1231711027903657e-07,
+        "first_stage_max_abs": 9.5367431640625e-07,
+        "fv_output_max_abs": 1.1920928955078125e-07,
+        "row_residual_max": 8.326672684688674e-17
+      },
+      "panel": {
+        "checks": {
+          "families": true,
+          "frequency": true,
+          "labels": true,
+          "roles": true,
+          "source": true,
+          "target_mask": true,
+          "truth": true
+        },
+        "field_count": 136,
+        "frequency_max_abs": 0.0,
+        "passed": true,
+        "source_max_abs": 0.0,
+        "truth_max_abs": 0.0
+      },
+      "resolution": "r64",
+      "seconds": 1179.5174746513367
+    },
+    "ICO-r32_to_CS-r32": {
+      "edge_order_exact": true,
+      "full_audit_panel": true,
+      "fv_mass_max_abs": 9.23740039199413e-16,
+      "fv_weight_max_abs": 5.29288635489622e-13,
+      "model": {
+        "audit_metric_max_relative": 1.1807096456095678e-07,
+        "column_residual_max": 1.8686514551572104e-14,
+        "final_max_abs": 4.76837158203125e-07,
+        "final_relative_linf": 1.3458829073442757e-07,
+        "first_stage_max_abs": 1.4901161193847656e-06,
+        "fv_output_max_abs": 1.1920928955078125e-07,
+        "row_residual_max": 1.0760706561918632e-16
+      },
+      "panel": {
+        "checks": {
+          "families": true,
+          "frequency": true,
+          "labels": true,
+          "roles": true,
+          "source": true,
+          "target_mask": true,
+          "truth": true
+        },
+        "field_count": 130,
+        "frequency_max_abs": 0.0,
+        "passed": true,
+        "source_max_abs": 0.0,
+        "truth_max_abs": 0.0
+      },
+      "resolution": null,
+      "seconds": 242.75737237930298
+    }
+  },
+  "panels_exact": true,
+  "row_residual_max": 1.0760706561918632e-16,
+  "second_stage_cpu_max_abs": 1.3877787807814457e-17,
+  "second_stage_gpu_max_abs": 4.76837158203125e-07,
+  "second_stage_gpu_relative_linf": 1.3458829073442757e-07,
+  "smoke": {
+    "checks": {
+      "capability_exercised": true,
+      "complete_phase": true,
+      "completed": true,
+      "format": true,
+      "router_exercised": true,
+      "smoke": true,
+      "source_hash": true,
+      "source_path": true
+    },
+    "path": "_next/checkpoints/progressive_next_smoke.pt"
+  },
+  "smoke_resumable": true,
+  "validation": {
+    "checks": {
+      "audit_metrics": true,
+      "column_constraints": true,
+      "first_stage": true,
+      "fv_edge_order_exact": true,
+      "fv_mass": true,
+      "fv_resolution_coverage": true,
+      "fv_weights": true,
+      "normalization_exact": true,
+      "panels_exact": true,
+      "row_constraints": true,
+      "second_stage_cpu": true,
+      "second_stage_gpu": true,
+      "smoke_resumable": true
+    },
+    "passed": true,
+    "status": "passed",
+    "values": {
+      "audit_metric_max_relative": 1.1807096456095678e-07,
+      "column_residual_max": 7.263238836486295e-12,
+      "first_stage_max_abs": 1.4901161193847656e-06,
+      "fv_edge_order_exact": true,
+      "fv_mass_max_abs": 1.6861512186494565e-15,
+      "fv_resolutions": [
+        "healpix",
+        "r128",
+        "r32",
+        "r64"
+      ],
+      "fv_weight_max_abs": 2.1329049637586195e-12,
+      "panels_exact": true,
+      "row_residual_max": 1.0760706561918632e-16,
+      "second_stage_cpu_max_abs": 1.3877787807814457e-17,
+      "second_stage_gpu_max_abs": 4.76837158203125e-07,
+      "second_stage_gpu_relative_linf": 1.3458829073442757e-07,
+      "smoke_resumable": true
+    }
+  }
+}

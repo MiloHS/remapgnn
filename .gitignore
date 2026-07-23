@@ -22,6 +22,8 @@ software/
 .generated/
 jobs/
 
+docs/LEGACY_ARCHIVE.md
+
 *.pt
 *.pth
 *.ckpt
@@ -35,9 +37,14 @@ jobs/
 *.tgz
 0.5
 
-# Local cleanup/archive holding area. Keep it recoverable locally, but do not
-# push old cluster jobs/logs/one-off sweep configs to GitHub.
-archive/
+# Local archives. Keep them recoverable on the cluster, never in GitHub.
+/_archive/
+/archive/
+
+# Clean-workflow artifacts. Source, configs, scripts, and tests remain tracked.
+/_next/checkpoints/
+/_next/reports/*
+!/_next/reports/equivalence_completed_v24f.json
 
 # Ignore generated analysis outputs by default
 analysis_medium_improv/*

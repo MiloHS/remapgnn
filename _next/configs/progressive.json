@@ -1,0 +1,62 @@
+{
+  "schema_version": 3,
+  "run_name": "progressive_next",
+  "seed": 2407,
+  "pair_roles": {
+    "train": ["CS-r32_to_ICOD-r32", "ICOD-r32_to_CS-r32", "CS-r32_to_RLL-r90-180", "RLL-r90-180_to_CS-r32", "ICOD-r32_to_RLL-r90-180"],
+    "selection": ["CS-r64_to_ICOD-r64", "ICO-r32_to_CS-r32"],
+    "protected": ["CS-r32_to_HP-n32", "ICOD-r32_to_HP-n32"],
+    "external_resolution": ["CS-r128_to_ICOD-r128", "ICOD-r128_to_CS-r128"]
+  },
+  "paths": {
+    "analysis": "analysis_medium_improv",
+    "maps": "maps_medium_improv",
+    "models": "_next/checkpoints",
+    "reports": "_next/reports",
+    "real_fields": "data/MIRA-Datasets",
+    "graph_suffix": "kdist_a3p0_mink8",
+    "output_checkpoint": "progressive_next.pt",
+    "history": "progressive_next_history.csv"
+  },
+  "features": {
+    "edge": ["area_ratio_tgt_over_src", "log_area_ratio_tgt_over_src", "knn_rank_over_target_count", "target_candidate_count_log", "source_candidate_count_log", "tan_dist_over_h_src", "tan_dist_over_h_tgt", "tan_dist_over_h_mean"],
+    "source": ["src_area", "src_h", "log_src_area"],
+    "target": ["tgt_area", "tgt_h", "log_tgt_area"],
+    "sample_per_pair": 80000
+  },
+  "fv_checkpoint": "_next/checkpoints/fv_relax1.pt",
+  "model": {
+    "source_checkpoint": "_next/checkpoints/progressive.pt",
+    "prefix_through": "mid_band",
+    "train_stage": "high_band",
+    "initialization": "fresh"
+  },
+  "stages": [
+    {"name": "mid_band", "band": {"lower": 1.0, "upper": 1.25}, "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
+    {"name": "high_band", "band": {"lower": 1.25, "upper": 1.5}, "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.2, "projection_iterations": 200}
+  ],
+  "panel": {
+    "quadrature_resolution": 8, "smoother_neighbors": 9, "frequency_cells_per_k_squared": 6.0,
+    "max_degrees_per_epoch": 4, "modes_per_degree": 6, "target_mixtures": 16,
+    "safety_levels": [0.25, 0.5, 0.75, 1.0, 1.125, 1.25, 1.75], "safety_modes_per_level": 3, "safety_mixtures": 16,
+    "audit_max_degrees": 5, "audit_modes_per_degree": 8, "audit_target_mixtures": 24,
+    "audit_safety_modes_per_level": 6, "audit_safety_mixtures": 24,
+    "real_fields": ["AnalyticalFun1", "AnalyticalFun2", "TotalPrecipWater", "CloudFraction", "Topography"]
+  },
+  "phases": {
+    "capability_epochs": 60, "capability_learning_rate": 0.0002, "router_epochs": 24,
+    "router_learning_rate": 0.0003, "weight_decay": 0.00001, "gradient_clip": 1.0,
+    "target_batch": 2, "safety_batch": 4, "evaluation_interval": 4
+  },
+  "loss": {
+    "guard_tolerance": 0.005, "fv_guard_tolerance": 0.02, "cvar_fraction": 0.25,
+    "guard_weight": 6.0, "local_weight": 0.5, "gate_teacher_weight": 0.1,
+    "safety_gate_weight": 0.05, "correction_weight": 0.00001
+  },
+  "selection": {"capability_minimum_improvement": 0.001, "final_minimum_gain": 0.02, "safety_tolerance": 0.02, "prior_band_tolerance": 0.01},
+  "audit": {
+    "row_tolerance": 1e-8, "column_tolerance": 1e-10, "minimum_target_gain": 0.03,
+    "maximum_safety_regression": 0.02, "maximum_prior_band_regression": 0.01,
+    "maximum_fv_regression": 0.02, "field_batch": 2, "timing_repeats": 5
+  }
+}

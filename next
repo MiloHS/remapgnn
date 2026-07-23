@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$ROOT_DIR"
+
+if [[ -n "${REMAPGNN_PYTHON:-}" ]]; then
+  PYTHON_BIN="$REMAPGNN_PYTHON"
+elif [[ -x /gpfs/fs1/home/mschlittgenli/.conda/envs/remap_gpu/bin/python ]]; then
+  PYTHON_BIN=/gpfs/fs1/home/mschlittgenli/.conda/envs/remap_gpu/bin/python
+else
+  PYTHON_BIN=python3
+fi
+
+export PYTHONPATH="$ROOT_DIR/_next${PYTHONPATH:+:$PYTHONPATH}"
+CONFIG="$ROOT_DIR/_next/configs/progressive.json"
+PRODUCTION="$ROOT_DIR/_next/checkpoints/progressive.pt"
+
+usage() {
+  cat <<'EOF'
+Clean remapping workflow
+
+Usage:
+  ./next status
+  ./next test
+  ./next smoke [training options]
+  ./next train [training options]
+  ./next resume [training options]
+  ./next audit [audit options]
+  ./next audit-candidate [audit options]
+  ./next audit-protected [audit options]
+  ./next build-fv PAIR OUTPUT [build options]
+
+Common examples:
+  ./next status
+  ./next smoke
+  ./next train
+  ./next resume
+  ./next audit --pairs CS-r64_to_ICOD-r64 ICO-r32_to_CS-r32
+
+`audit` checks the approved converted checkpoint. `audit-candidate` checks the
+latest trained candidate. Protected/large-resolution pairs require the explicit
+`audit-protected` command.
+EOF
+}
+
+command_name=${1:-help}
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$command_name" in
+  status)
+    exec "$PYTHON_BIN" -B "$ROOT_DIR/_next/scripts/status.py" "$@"
+    ;;
+  test)
+    exec "$PYTHON_BIN" -B -m unittest discover -s "$ROOT_DIR/_next/tests" -p 'test_*.py' -v
+    ;;
+  smoke)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/train.py" \
+      --config "$CONFIG" --device cuda --smoke "$@"
+    ;;
+  train)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/train.py" \
+      --config "$CONFIG" --device cuda "$@"
+    ;;
+  resume)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/train.py" \
+      --config "$CONFIG" --device cuda --resume "$@"
+    ;;
+  audit)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
+      --config "$CONFIG" --device cuda --checkpoint "$PRODUCTION" \
+      --require-production "$@"
+    ;;
+  audit-candidate)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
+      --config "$CONFIG" --device cuda "$@"
+    ;;
+  audit-protected)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
+      --config "$CONFIG" --device cuda --checkpoint "$PRODUCTION" \
+      --require-production --allow-protected "$@"
+    ;;
+  build-fv)
+    if [[ $# -lt 2 ]]; then
+      echo "build-fv requires PAIR and OUTPUT" >&2
+      usage >&2
+      exit 2
+    fi
+    pair_name=$1
+    output_path=$2
+    shift 2
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/build_fv.py" \
+      --config "$CONFIG" --pair "$pair_name" --output "$output_path" "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $command_name" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
