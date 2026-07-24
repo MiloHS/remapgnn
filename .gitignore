@@ -26,6 +26,8 @@ docs/LEGACY_ARCHIVE.md
 
 AGENTS.md
 
+docs/ACTIVE_WORKFLOW.md
+
 *.pt
 *.pth
 *.ckpt
