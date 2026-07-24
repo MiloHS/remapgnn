@@ -143,9 +143,9 @@ def normalized_feature_tensors(edge_path, feature_spec, normalization):
     target_index = frame["target_index"].to_numpy(dtype=np.int64)
     n_source, n_target = int(source_index.max()) + 1, int(target_index.max()) + 1
 
-    def unique(index, names, size, dtype=np.float32):
-        value = np.zeros((size, len(names)), dtype=dtype)
-        value[index] = frame[names].to_numpy(dtype=dtype)
+    def unique(index, names, size):
+        value = np.zeros((size, len(names)), dtype=np.float32)
+        value[index] = frame[names].to_numpy(dtype=np.float32)
         return value
 
     edge = frame[feature_spec["edge"]].to_numpy(dtype=np.float32)
@@ -156,8 +156,8 @@ def normalized_feature_tensors(edge_path, feature_spec, normalization):
     target = (target - normalization["tgt_mean"]) / normalization["tgt_std"]
     source_xyz = unique(source_index, ["src_x", "src_y", "src_z"], n_source)
     target_xyz = unique(target_index, ["tgt_x", "tgt_y", "tgt_z"], n_target)
-    source_area = unique(source_index, ["src_area"], n_source, np.float64).reshape(-1)
-    target_area = unique(target_index, ["tgt_area"], n_target, np.float64).reshape(-1)
+    source_area = unique(source_index, ["src_area"], n_source).reshape(-1)
+    target_area = unique(target_index, ["tgt_area"], n_target).reshape(-1)
     return {
         "frame": frame,
         "src_index": torch.tensor(source_index, dtype=torch.long),
@@ -208,9 +208,12 @@ def intrinsic_geometry_features(pair, reference, epsilon=1.0e-8):
     """Eight rotation-invariant edge/stencil descriptors used by every stage."""
     source_index, target_index = pair.src_index, pair.tgt_index
     source, target = pair.src_xyz[source_index], pair.tgt_xyz[target_index]
+    feature_dtype = pair.edge_features.dtype
+    area_src = pair.area_src.to(feature_dtype)
+    area_tgt = pair.area_tgt.to(feature_dtype)
     tangent = source - (source * target).sum(dim=1, keepdim=True) * target
-    source_h = pair.area_src[source_index].clamp_min(1.0e-20).sqrt()
-    target_h = pair.area_tgt[target_index].clamp_min(1.0e-20).sqrt()
+    source_h = area_src[source_index].clamp_min(1.0e-20).sqrt()
+    target_h = area_tgt[target_index].clamp_min(1.0e-20).sqrt()
     tangent_scaled = tangent / torch.sqrt(source_h * target_h).view(-1, 1)
     radius = tangent_scaled.norm(dim=1)
     n_tgt = pair.n_tgt
@@ -231,7 +234,10 @@ def intrinsic_geometry_features(pair, reference, epsilon=1.0e-8):
         (
             radius,
             radius.square(),
-            torch.log((pair.area_src[source_index] / pair.area_tgt[target_index]).clamp_min(1.0e-20)),
+            torch.log(
+                (area_src[source_index] / area_tgt[target_index])
+                .clamp_min(1.0e-20)
+            ),
             pair.fv_operator.weight.to(pair.edge_features.dtype),
             first_dot / trace.sqrt()[target_index],
             first_norm[target_index] / trace.sqrt()[target_index],

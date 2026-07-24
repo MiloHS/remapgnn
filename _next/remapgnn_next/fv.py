@@ -247,8 +247,11 @@ def build_pair_from_files(
         network,
         source_node_features=moved["source"], target_node_features=moved["target"],
         edge_features=moved["edge"], src_index=moved["src_index"], tgt_index=moved["tgt_index"],
-        area_src=torch.tensor(source_moments["area"], dtype=torch.float64, device=device),
-        area_tgt=torch.tensor(target_moments["area"], dtype=torch.float64, device=device),
+        # These are the authenticated graph/map area inputs used by the
+        # converted relax1 operator.  The projection promotes them to float64
+        # internally; substituting freshly recomputed quadrature areas changes
+        # the accepted operator and breaks its golden edge-weight equivalence.
+        area_src=moved["area_src"], area_tgt=moved["area_tgt"],
         source_linear_moments=torch.tensor(source_moments["coordinate"], dtype=torch.float32, device=device),
         target_linear_moments=torch.tensor(target_moments["coordinate"], dtype=torch.float32, device=device),
         source_quadratic_moments=torch.tensor(source_moments["quadratic"], dtype=torch.float32, device=device),

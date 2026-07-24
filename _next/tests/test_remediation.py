@@ -7,14 +7,21 @@ import numpy as np
 import pytest
 import torch
 
-from remapgnn_next.checkpoint import validate_production_manifest
+from remapgnn_next.checkpoint import (
+    CLEAN_PROGRESSIVE_FORMAT, PROGRESSIVE_SCHEMA_VERSION,
+    validate_production_manifest,
+)
 from remapgnn_next.config import ExperimentConfig, StageConfig, load_config
 from remapgnn_next.constraints import project_marginals
 from remapgnn_next.evaluation import promotion_report, safe_ratio
 from remapgnn_next.panels import band_degrees
 from remapgnn_next.progressive import ConservativeCorrectionStage, ProgressiveRemapper
 from remapgnn_next.provenance import file_sha256
+from remapgnn_next.equivalence import (
+    compare_clean_checkpoints, harden_checkpoint,
+)
 from remapgnn_next.training import benefit_teacher_labels
+from remapgnn_next.types import PairData, SparseOperator
 
 
 def test_schema4_rejects_unknown_top_level_key():
@@ -75,6 +82,35 @@ def test_closed_straight_through_gate_has_task_gradient(synthetic_pair):
     assert torch.count_nonzero(gradient)
 
 
+def test_progressive_features_accept_float64_fv_areas(synthetic_pair):
+    operator = SparseOperator.from_weight(
+        synthetic_pair.src_index,
+        synthetic_pair.tgt_index,
+        synthetic_pair.fv_operator.weight.double(),
+        synthetic_pair.area_src.double(),
+        synthetic_pair.area_tgt.double(),
+    )
+    pair = PairData(
+        pair=synthetic_pair.pair,
+        edge_features=synthetic_pair.edge_features,
+        src_xyz=synthetic_pair.src_xyz,
+        tgt_xyz=synthetic_pair.tgt_xyz,
+        src_neighbor_index=synthetic_pair.src_neighbor_index,
+        src_neighbor_weight=synthetic_pair.src_neighbor_weight,
+        tgt_neighbor_index=synthetic_pair.tgt_neighbor_index,
+        tgt_neighbor_weight=synthetic_pair.tgt_neighbor_weight,
+        fv_operator=operator,
+    )
+    stage = ConservativeCorrectionStage(
+        StageConfig(name="mid", band_lower=1.0, band_upper=1.25)
+    )
+    output = ProgressiveRemapper(operator, [stage])(
+        pair, torch.randn(2, pair.n_src), return_diagnostics=False
+    )
+    assert output.dtype == torch.float32
+    assert torch.isfinite(output).all()
+
+
 def test_detached_production_manifest_binds_checkpoint(tmp_path):
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_bytes(b"checkpoint")
@@ -96,6 +132,61 @@ def test_detached_production_manifest_binds_checkpoint(tmp_path):
     validate_production_manifest(checkpoint, manifest)
     checkpoint.write_bytes(b"changed")
     with pytest.raises(ValueError, match="does not match"):
+        validate_production_manifest(checkpoint, manifest)
+
+
+def test_hardened_checkpoint_preserves_clean_payload(tmp_path):
+    stage = ConservativeCorrectionStage(
+        StageConfig(name="mid", band_lower=1.0, band_upper=1.25)
+    )
+    state = {
+        name: value.detach().clone()
+        for name, value in stage.state_dict().items()
+    }
+    source = tmp_path / "source.pt"
+    hardened = tmp_path / "hardened.pt"
+    torch.save({
+        "format": CLEAN_PROGRESSIVE_FORMAT,
+        "schema_version": PROGRESSIVE_SCHEMA_VERSION,
+        "runtime_data": {"edge_features": ["a"]},
+        "fv_checkpoint": {"path": "fv.pt", "sha256": "abc"},
+        "selected_identity": True,
+        "stages": [{
+            "config": stage.config.to_dict(),
+            "state": state,
+        }],
+    }, source)
+    result = harden_checkpoint(
+        source, hardened, repository=".", allow_dirty=True
+    )
+    comparison = compare_clean_checkpoints(source, hardened)
+    assert comparison["passed"]
+    assert result["source_checkpoint_sha256"] == file_sha256(source)
+    assert result["checkpoint_sha256"] == file_sha256(hardened)
+
+
+def test_hardened_manifest_rejects_cpu_only_evidence(tmp_path):
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    report = tmp_path / "equivalence.json"
+    report.write_text(json.dumps({
+        "format": "remapgnn.hardened_equivalence",
+        "passed": True,
+        "acceptance_ready": False,
+        "checkpoint_sha256": file_sha256(checkpoint),
+    }))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "format": "remapgnn.production_manifest", "schema_version": 1,
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "fv_checkpoint": {
+            "path": str(checkpoint), "sha256": file_sha256(checkpoint)
+        },
+        "equivalence_report": {
+            "path": str(report), "sha256": file_sha256(report)
+        },
+    }))
+    with pytest.raises(ValueError, match="not acceptance-ready"):
         validate_production_manifest(checkpoint, manifest)
 
 
@@ -125,6 +216,22 @@ def test_fv_marginal_projection_rejects_incompatible_totals():
             torch.tensor([0.4, 0.5], dtype=torch.float64),
             torch.tensor([0.5, 0.5], dtype=torch.float64),
         )
+
+
+def test_fv_total_compatibility_uses_aggregate_cell_tolerances():
+    source = torch.tensor([0, 1, 0, 1], dtype=torch.long)
+    target = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+    mass, info = project_marginals(
+        torch.full((4,), 0.25, dtype=torch.float64),
+        source, target,
+        torch.tensor([0.5, 0.5000000002], dtype=torch.float64),
+        torch.tensor([0.5, 0.5], dtype=torch.float64),
+        epsilon_relative=0.0, iterations=100,
+        row_tolerance=1e-10, column_tolerance=1e-10,
+        assert_converged=True, return_info=True,
+    )
+    assert info.converged
+    assert torch.isfinite(mass).all()
 
 
 def test_benefit_teacher_labels_reward_helpful_corrections():

@@ -191,7 +191,10 @@ class ConservativeCorrectionStage(nn.Module):
         source_xyz = pair.src_xyz[pair.src_index]
         target_xyz = pair.tgt_xyz[pair.tgt_index]
         tangent = source_xyz - (source_xyz * target_xyz).sum(dim=1, keepdim=True) * target_xyz
-        tangent_scaled = tangent / pair.area_tgt[pair.tgt_index].clamp_min(1.0e-20).sqrt().view(-1, 1)
+        target_feature_area = pair.area_tgt.to(raw_source.dtype)
+        tangent_scaled = tangent / target_feature_area[
+            pair.tgt_index
+        ].clamp_min(1.0e-20).sqrt().view(-1, 1)
         gradient_denominator = index_sum(
             reference * tangent_scaled.square().sum(dim=1), pair.tgt_index, pair.n_tgt
         ).clamp_min(self.config.epsilon)

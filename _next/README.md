@@ -60,5 +60,36 @@ The verification command, run in the project PyTorch environment, is:
 ./next test
 ```
 
+## Hardened production equivalence
+
+The production replacement is deliberately parallel: it never overwrites
+`progressive.pt`.
+
+```bash
+./next harden
+qsub _next/equivalence.pbs
+```
+
+`harden` refuses a dirty Git tree. The job first runs the CPU/r32 gate and
+only then runs CUDA equivalence on r32, r64, HeALPix, and r128. Generated
+checkpoints, reports, extracted legacy files, and PBS output remain untracked.
+The small verifier and PBS recipe stay in Git so a production checkpoint can
+be reauthenticated later.
+
+After the full report says both `passed: true` and
+`acceptance_ready: true`, create the detached manifest without activation:
+
+```bash
+PYTHONPATH=_next python _next/scripts/create_production_manifest.py \
+  --checkpoint _next/checkpoints/progressive_hardened.pt \
+  --fv-checkpoint _next/checkpoints/fv_relax1.pt \
+  --equivalence-report _next/reports/equivalence_hardened_COMMIT.json \
+  --output _next/checkpoints/progressive_hardened.manifest.json
+```
+
+Activation is a later explicit run with `--activate` and one `--config` for
+each active training configuration. It updates those source references before
+changing `production.json`, preventing production/training drift.
+
 For use, refer to the repository-level `./next` command documented in
 `docs/ACTIVE_WORKFLOW.md`.

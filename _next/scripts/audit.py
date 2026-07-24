@@ -14,6 +14,7 @@ from remapgnn_next.checkpoint import (
 )
 from remapgnn_next.evaluation import audit_experiment
 from remapgnn_next.fv import build_pair_from_files
+from remapgnn_next.progressive import ProgressiveRemapper
 from remapgnn_next.provenance import authenticated_load
 from remapgnn_next.provenance import canonical_json_sha256
 
@@ -30,6 +31,13 @@ def main():
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--require-production", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--through-stage",
+        help=(
+            "audit the deployed prefix through this stage; use this to assess "
+            "an accepted prefix separately from a later identity-rejected stage"
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -54,6 +62,20 @@ def main():
         )
     else:
         raise ValueError("unsupported clean checkpoint")
+    if args.through_stage:
+        names_in_model = [stage.name for stage in model.stages]
+        if args.through_stage not in names_in_model:
+            raise ValueError(
+                f"checkpoint has no stage {args.through_stage!r}; "
+                f"available: {names_in_model}"
+            )
+        stop = names_in_model.index(args.through_stage) + 1
+        model = ProgressiveRemapper(None, list(model.stages[:stop]))
+        print(
+            f"AUDIT_PREFIX through_stage={args.through_stage} "
+            f"stages={[stage.name for stage in model.stages]}",
+            flush=True,
+        )
     fv_pack, fv_sha256 = authenticated_load(config.fv_checkpoint)
     validate_fv_reference(progressive_pack, config.fv_checkpoint, fv_sha256)
     names = args.pairs or list(config.pair_roles["selection"])

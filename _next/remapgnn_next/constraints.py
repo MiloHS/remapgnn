@@ -165,13 +165,19 @@ def project_marginals(
     q = raw_mass.to(solve_dtype)
     source_area, target_area = area_src.to(solve_dtype), area_tgt.to(solve_dtype)
     mismatch = (target_area.sum() - source_area.sum()).abs()
-    scale = 0.5 * (target_area.sum().abs() + source_area.sum().abs()).clamp_min(1.0e-30)
     if not bool(torch.isfinite(q).all()) or not bool(torch.isfinite(source_area).all()) or \
        not bool(torch.isfinite(target_area).all()):
         raise ValueError("marginal projection inputs must be finite")
     if bool((source_area <= 0).any()) or bool((target_area <= 0).any()):
         raise ValueError("marginal projection areas must be positive")
-    if float(mismatch / scale) > min(float(row_tolerance), float(column_tolerance)):
+    # Per-cell marginal tolerances imply an aggregate compatibility budget.
+    # Comparing the total-area mismatch directly with a single-cell tolerance
+    # wrongly rejects the authenticated float32 areas, even though both sets
+    # of cellwise residuals can satisfy their stated bounds.
+    compatibility_budget = (
+        n_tgt * float(row_tolerance) + n_src * float(column_tolerance)
+    )
+    if float(mismatch) > compatibility_budget:
         raise ValueError("source and target total areas are incompatible")
     degree_t = index_sum(torch.ones_like(q), tgt_index, n_tgt)
     degree_s = index_sum(torch.ones_like(q), src_index, n_src)
@@ -201,8 +207,15 @@ def project_marginals(
     target_residual = index_sum(mass, tgt_index, n_tgt) - target_area
     row_max, column_max = target_residual.abs().max(), source_residual.abs().max()
     relative = old.sqrt() / initial
+    # The solve is deliberately Tikhonov-regularized.  Once the requested
+    # marginals are at roundoff, the recurrence residual can be dominated by
+    # ``epsilon * x`` and therefore have a large *relative* value when the
+    # initial mismatch was itself tiny.  The mathematical postcondition of
+    # this projection is the two marginals, so convergence is decided from
+    # their independently recomputed residuals.  ``relative`` remains in the
+    # diagnostics to expose slow or stagnant solves.
     converged = bool(
-        relative < tolerance
+        torch.isfinite(relative)
         and row_max <= float(row_tolerance)
         and column_max <= float(column_tolerance)
     )

@@ -72,6 +72,11 @@ def validate_production_manifest(path, manifest_path):
     evidence = json.loads(report.read_text())
     if not evidence.get("passed", evidence.get("checks", {}).get("passed", False)):
         raise ValueError("equivalence report did not pass")
+    if (
+        evidence.get("format") == "remapgnn.hardened_equivalence"
+        and not evidence.get("acceptance_ready", False)
+    ):
+        raise ValueError("hardened equivalence report is not acceptance-ready")
     recorded = evidence.get("checkpoint_sha256") or \
         evidence.get("values", {}).get("clean_checkpoint", {}).get("sha256")
     if recorded != manifest["checkpoint_sha256"]:
