@@ -22,11 +22,15 @@ software/
 .generated/
 jobs/
 
+# May put back
 docs/LEGACY_ARCHIVE.md
-
 AGENTS.md
-
 docs/audits/implementation_2026-07-23/
+_next/scripts/verify_hardened_equivalence.py
+_next/scripts/harden_checkpoint.py
+_next/remapgnn_next/equivalence.py
+_next/equivalence.pbs
+
 
 *.pt
 *.pth
