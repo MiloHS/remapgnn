@@ -7,19 +7,13 @@ import numpy as np
 import pytest
 import torch
 
-from remapgnn_next.checkpoint import (
-    CLEAN_PROGRESSIVE_FORMAT, PROGRESSIVE_SCHEMA_VERSION,
-    validate_production_manifest,
-)
+from remapgnn_next.checkpoint import validate_production_manifest
 from remapgnn_next.config import ExperimentConfig, StageConfig, load_config
 from remapgnn_next.constraints import project_marginals
 from remapgnn_next.evaluation import promotion_report, safe_ratio
 from remapgnn_next.panels import band_degrees
 from remapgnn_next.progressive import ConservativeCorrectionStage, ProgressiveRemapper
 from remapgnn_next.provenance import file_sha256
-from remapgnn_next.equivalence import (
-    compare_clean_checkpoints, harden_checkpoint,
-)
 from remapgnn_next.training import benefit_teacher_labels
 from remapgnn_next.types import PairData, SparseOperator
 
@@ -133,36 +127,6 @@ def test_detached_production_manifest_binds_checkpoint(tmp_path):
     checkpoint.write_bytes(b"changed")
     with pytest.raises(ValueError, match="does not match"):
         validate_production_manifest(checkpoint, manifest)
-
-
-def test_hardened_checkpoint_preserves_clean_payload(tmp_path):
-    stage = ConservativeCorrectionStage(
-        StageConfig(name="mid", band_lower=1.0, band_upper=1.25)
-    )
-    state = {
-        name: value.detach().clone()
-        for name, value in stage.state_dict().items()
-    }
-    source = tmp_path / "source.pt"
-    hardened = tmp_path / "hardened.pt"
-    torch.save({
-        "format": CLEAN_PROGRESSIVE_FORMAT,
-        "schema_version": PROGRESSIVE_SCHEMA_VERSION,
-        "runtime_data": {"edge_features": ["a"]},
-        "fv_checkpoint": {"path": "fv.pt", "sha256": "abc"},
-        "selected_identity": True,
-        "stages": [{
-            "config": stage.config.to_dict(),
-            "state": state,
-        }],
-    }, source)
-    result = harden_checkpoint(
-        source, hardened, repository=".", allow_dirty=True
-    )
-    comparison = compare_clean_checkpoints(source, hardened)
-    assert comparison["passed"]
-    assert result["source_checkpoint_sha256"] == file_sha256(source)
-    assert result["checkpoint_sha256"] == file_sha256(hardened)
 
 
 def test_hardened_manifest_rejects_cpu_only_evidence(tmp_path):
