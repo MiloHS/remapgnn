@@ -12,7 +12,7 @@ from remapgnn_next.checkpoint import (
     CLEAN_FV_FORMAT, build_training_model, validate_fv_reference,
 )
 from remapgnn_next.fv import build_pair_from_files
-from remapgnn_next.provenance import authenticated_load
+from remapgnn_next.provenance import authenticated_load, build_run_manifest
 from remapgnn_next.training import SequentialTrainer, set_seed
 
 
@@ -25,15 +25,25 @@ def main():
     parser.add_argument("--stage", help="stage name; must match model.train_stage")
     parser.add_argument("--checkpoint", help="initial clean progressive conversion")
     parser.add_argument("--output", help="training checkpoint destination")
+    parser.add_argument("--history", help="history CSV destination")
     args = parser.parse_args()
 
     config = load_config(args.config)
     source = Path(args.checkpoint or config.model.source_checkpoint)
     output = Path(args.output or config.paths.checkpoint_path)
-    history = config.paths.history_path
+    history = Path(args.history) if args.history else (
+        Path(args.output).with_name(Path(args.output).stem + "_history.csv")
+        if args.output else config.paths.history_path
+    )
     if args.smoke:
         output = output.with_name(output.stem + "_smoke.pt")
         history = history.with_name(history.stem + "_smoke.csv")
+    train_names = list(config.pair_roles["train"][:1] if args.smoke else config.pair_roles["train"])
+    selection_names = train_names if args.smoke else list(config.pair_roles["selection"])
+    manifest = build_run_manifest(
+        config, source, pair_names=list(dict.fromkeys(train_names + selection_names)),
+        smoke=args.smoke,
+    )
     fv_pack, fv_sha256 = authenticated_load(config.fv_checkpoint)
     if fv_pack.get("format") != CLEAN_FV_FORMAT:
         raise ValueError("training requires a clean FV checkpoint")
@@ -48,8 +58,6 @@ def main():
     stage_index = next(
         index for index, stage in enumerate(model.stages) if stage.name == stage_name
     )
-    train_names = list(config.pair_roles["train"][:1] if args.smoke else config.pair_roles["train"])
-    selection_names = train_names if args.smoke else list(config.pair_roles["selection"])
     pairs = {}
     for name in dict.fromkeys(train_names + selection_names):
         started = time.time()
@@ -66,6 +74,7 @@ def main():
         selection_pairs={name: pairs[name] for name in selection_names},
         source_checkpoint=source, model_initialization=initialization,
         output=output, history_path=history, device=args.device,
+        run_manifest=manifest,
     )
     result = trainer.run(resume=args.resume, smoke=args.smoke)
     print(f"TRAIN_DONE checkpoint={output} selected_identity={result['selected_identity']}", flush=True)

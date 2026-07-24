@@ -24,6 +24,8 @@ jobs/
 
 docs/LEGACY_ARCHIVE.md
 
+AGENTS.md
+
 *.pt
 *.pth
 *.ckpt
@@ -31,7 +33,6 @@ docs/LEGACY_ARCHIVE.md
 *.parquet
 *.log
 *.out
-*.pbs
 *.o[0-9]*
 *.tar.gz
 *.tgz

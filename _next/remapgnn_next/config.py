@@ -4,12 +4,30 @@ from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Mapping
+import math
 
 """Reads json configs into Python settings: pairs, data paths, stage sizes, training
     schedules, and pass thresholds."""
 
 _GATE_MODES = {"forced_open", "forced_closed", "soft", "hard", "straight_through"}
 _INITIALIZATION_MODES = {"fresh", "checkpoint"}
+_PAIR_ROLES = {"train", "selection", "protected", "external_resolution"}
+
+
+def _finite(name, value, *, positive=False, nonnegative=False):
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be finite")
+    if positive and float(value) <= 0:
+        raise ValueError(f"{name} must be positive")
+    if nonnegative and float(value) < 0:
+        raise ValueError(f"{name} must be nonnegative")
+
+
+def _strict_dataclass(cls, raw, label):
+    unknown = set(raw) - set(cls.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"unknown {label} keys: {sorted(unknown)}")
+    return cls(**raw)
 
 
 @dataclass(frozen=True)
@@ -25,6 +43,8 @@ class StageConfig:
     reference_floor: float = 1.0e-3
     edge_chunk: int = 50000
     projection_iterations: int = 200
+    projection_row_tolerance: float = 1.0e-8
+    projection_column_tolerance: float = 1.0e-10
     field_gate_low: float = 0.4
     field_gate_high: float = 0.6
     local_gate_low: float = 0.1
@@ -38,6 +58,11 @@ class StageConfig:
     def __post_init__(self):
         if not self.name or self.band_lower >= self.band_upper:
             raise ValueError("stage needs a name and an increasing band")
+        for name in ("edge_dim", "hidden", "geometry_hidden", "router_hidden",
+                     "projection_iterations", "edge_chunk"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{self.name}.{name} must be an integer")
         if min(self.edge_dim, self.hidden, self.geometry_hidden, self.router_hidden) <= 0:
             raise ValueError(f"{self.name}: network dimensions must be positive")
         if self.projection_iterations <= 0:
@@ -49,6 +74,14 @@ class StageConfig:
         for mode in (self.capability_gate_mode, self.router_gate_mode, self.deployment_gate_mode):
             if mode not in _GATE_MODES:
                 raise ValueError(f"{self.name}: unknown gate mode {mode!r}")
+        for name in ("band_lower", "band_upper", "delta_scale"):
+            _finite(f"{self.name}.{name}", getattr(self, name), nonnegative=True)
+        for name in ("reference_floor", "gate_feature_epsilon", "epsilon"):
+            _finite(f"{self.name}.{name}", getattr(self, name), positive=True)
+        for name in ("projection_row_tolerance", "projection_column_tolerance"):
+            _finite(f"{self.name}.{name}", getattr(self, name), positive=True)
+        if self.edge_chunk < 0:
+            raise ValueError(f"{self.name}.edge_chunk must be nonnegative")
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "StageConfig":
@@ -83,6 +116,13 @@ class PathsConfig:
     output_checkpoint: str = "progressive_next.pt"
     history: str = "progressive_next_history.csv"
 
+    def __post_init__(self):
+        for name in self.__dataclass_fields__:
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"paths.{name} must be nonempty")
+        if self.output_checkpoint == self.history:
+            raise ValueError("checkpoint and history paths must differ")
+
     def edge_path(self, pair):
         return Path(self.analysis) / f"edge_dataset_{pair}_{self.graph_suffix}.parquet"
 
@@ -109,9 +149,12 @@ class PathsConfig:
 @dataclass(frozen=True)
 class FeatureConfig:
     edge: tuple[str, ...]
-    source: tuple[str, ...] = ("src_area", "src_h", "log_src_area")
-    target: tuple[str, ...] = ("tgt_area", "tgt_h", "log_tgt_area")
-    sample_per_pair: int = 80000
+
+    def __post_init__(self):
+        if not self.edge or any(not value for value in self.edge):
+            raise ValueError("features.edge must be nonempty")
+        if len(self.edge) != len(set(self.edge)):
+            raise ValueError("features.edge contains duplicates")
 
 
 @dataclass(frozen=True)
@@ -134,6 +177,22 @@ class PanelConfig:
         "AnalyticalFun1", "AnalyticalFun2", "TotalPrecipWater", "CloudFraction", "Topography"
     )
 
+    def __post_init__(self):
+        for name in ("quadrature_resolution", "smoother_neighbors", "max_degrees_per_epoch",
+                     "modes_per_degree", "safety_modes_per_level", "audit_max_degrees",
+                     "audit_modes_per_degree", "audit_safety_modes_per_level"):
+            if int(getattr(self, name)) <= 0:
+                raise ValueError(f"panel.{name} must be positive")
+        for name in ("target_mixtures", "safety_mixtures", "audit_target_mixtures",
+                     "audit_safety_mixtures"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"panel.{name} must be nonnegative")
+        _finite("panel.frequency_cells_per_k_squared", self.frequency_cells_per_k_squared, positive=True)
+        if not self.safety_levels or any(not math.isfinite(x) or x < 0 for x in self.safety_levels):
+            raise ValueError("panel.safety_levels must be finite and nonnegative")
+        if len(self.real_fields) != len(set(self.real_fields)):
+            raise ValueError("panel.real_fields contains duplicates")
+
 
 @dataclass(frozen=True)
 class PhaseConfig:
@@ -147,6 +206,15 @@ class PhaseConfig:
     safety_batch: int = 4
     evaluation_interval: int = 4
 
+    def __post_init__(self):
+        for name in ("capability_epochs", "router_epochs", "target_batch", "safety_batch",
+                     "evaluation_interval"):
+            if int(getattr(self, name)) <= 0:
+                raise ValueError(f"phases.{name} must be positive")
+        for name in ("capability_learning_rate", "router_learning_rate", "gradient_clip"):
+            _finite(f"phases.{name}", getattr(self, name), positive=True)
+        _finite("phases.weight_decay", self.weight_decay, nonnegative=True)
+
 
 @dataclass(frozen=True)
 class LossConfig:
@@ -158,6 +226,16 @@ class LossConfig:
     gate_teacher_weight: float = 0.1
     safety_gate_weight: float = 0.05
     correction_weight: float = 1.0e-5
+    router_teacher_temperature: float = 0.1
+
+    def __post_init__(self):
+        for name in ("guard_tolerance", "fv_guard_tolerance", "guard_weight", "local_weight",
+                     "gate_teacher_weight", "safety_gate_weight", "correction_weight"):
+            _finite(f"loss.{name}", getattr(self, name), nonnegative=True)
+        _finite("loss.cvar_fraction", self.cvar_fraction, positive=True)
+        if self.cvar_fraction > 1:
+            raise ValueError("loss.cvar_fraction must be at most 1")
+        _finite("loss.router_teacher_temperature", self.router_teacher_temperature, positive=True)
 
 
 @dataclass(frozen=True)
@@ -166,6 +244,10 @@ class SelectionConfig:
     final_minimum_gain: float = 0.02
     safety_tolerance: float = 0.02
     prior_band_tolerance: float = 0.01
+
+    def __post_init__(self):
+        for name in self.__dataclass_fields__:
+            _finite(f"selection.{name}", getattr(self, name), nonnegative=True)
 
 
 @dataclass(frozen=True)
@@ -178,6 +260,16 @@ class AuditConfig:
     maximum_fv_regression: float = 0.02
     field_batch: int = 2
     timing_repeats: int = 5
+    zero_error_tolerance: float = 1.0e-14
+
+    def __post_init__(self):
+        for name in ("row_tolerance", "column_tolerance", "zero_error_tolerance"):
+            _finite(f"audit.{name}", getattr(self, name), positive=True)
+        for name in ("minimum_target_gain", "maximum_safety_regression",
+                     "maximum_prior_band_regression", "maximum_fv_regression"):
+            _finite(f"audit.{name}", getattr(self, name), nonnegative=True)
+        if self.field_batch <= 0 or self.timing_repeats <= 0:
+            raise ValueError("audit batch and timing counts must be positive")
 
 
 @dataclass(frozen=True)
@@ -185,6 +277,7 @@ class ModelConfig:
     """How a trainable model is assembled from an approved clean checkpoint."""
 
     source_checkpoint: str
+    source_manifest: str
     prefix_through: str | None
     train_stage: str
     initialization: str = "fresh"
@@ -193,6 +286,8 @@ class ModelConfig:
     def __post_init__(self):
         if not self.source_checkpoint:
             raise ValueError("model.source_checkpoint is required")
+        if not self.source_manifest:
+            raise ValueError("model.source_manifest is required")
         if not self.train_stage:
             raise ValueError("model.train_stage is required")
         if self.initialization not in _INITIALIZATION_MODES:
@@ -223,10 +318,12 @@ class ExperimentConfig:
     path: Path | None = field(default=None, repr=False)
 
     def __post_init__(self):
-        if self.schema_version != 3:
-            raise ValueError(f"unsupported experiment schema {self.schema_version}; expected 3")
+        if self.schema_version != 4:
+            raise ValueError(f"unsupported experiment schema {self.schema_version}; expected 4")
         if not self.fv_checkpoint:
             raise ValueError("FV checkpoint path is required")
+        if not self.run_name.strip():
+            raise ValueError("run_name must be nonempty")
         names = [stage.name for stage in self.stages]
         if not names or len(names) != len(set(names)):
             raise ValueError("at least one uniquely named stage is required")
@@ -244,6 +341,13 @@ class ExperimentConfig:
             if names.index(self.model.prefix_through) != train_index - 1:
                 raise ValueError("prefix_through must immediately precede the train stage")
         roles = {name: set(values) for name, values in self.pair_roles.items()}
+        unknown_roles = set(roles) - _PAIR_ROLES
+        if unknown_roles:
+            raise ValueError(f"unknown pair roles: {sorted(unknown_roles)}")
+        if not roles.get("train") or not roles.get("selection"):
+            raise ValueError("train and selection pair roles must be nonempty")
+        if any(not isinstance(pair, str) or not pair for values in self.pair_roles.values() for pair in values):
+            raise ValueError("pair roles must contain nonempty strings")
         ordered = ("train", "selection", "protected", "external_resolution")
         for index, left in enumerate(ordered):
             for right in ordered[index + 1:]:
@@ -259,21 +363,33 @@ class ExperimentConfig:
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any], *, path=None):
         data = dict(raw)
-        paths = PathsConfig(**data["paths"])
+        allowed = {"schema_version", "run_name", "seed", "pair_roles", "paths", "features",
+                   "fv_checkpoint", "model", "stages", "panel", "phases", "loss",
+                   "selection", "audit"}
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValueError(f"unknown experiment keys: {sorted(unknown)}")
+        paths = _strict_dataclass(PathsConfig, dict(data["paths"]), "paths")
         feature_raw = dict(data["features"])
-        features = FeatureConfig(
-            edge=tuple(feature_raw.pop("edge")), source=tuple(feature_raw.pop("source", feature_raw.pop("src_node", ("src_area", "src_h", "log_src_area")))),
-            target=tuple(feature_raw.pop("target", feature_raw.pop("tgt_node", ("tgt_area", "tgt_h", "log_tgt_area")))), **feature_raw,
-        )
+        if set(feature_raw) != {"edge"}:
+            raise ValueError(f"features supports only 'edge'; got {sorted(feature_raw)}")
+        features = FeatureConfig(edge=tuple(feature_raw["edge"]))
+        panel_raw = dict(data.get("panel", {}))
+        if "safety_levels" in panel_raw:
+            panel_raw["safety_levels"] = tuple(panel_raw["safety_levels"])
+        if "real_fields" in panel_raw:
+            panel_raw["real_fields"] = tuple(panel_raw["real_fields"])
         return cls(
             schema_version=int(data["schema_version"]), run_name=str(data.get("run_name", "progressive_next")),
             pair_roles={key: tuple(value) for key, value in data["pair_roles"].items()},
             paths=paths, features=features, fv_checkpoint=str(data["fv_checkpoint"]),
-            model=ModelConfig(**data["model"]),
+            model=_strict_dataclass(ModelConfig, dict(data["model"]), "model"),
             stages=tuple(StageConfig.from_dict(value) for value in data["stages"]),
-            panel=PanelConfig(**{**data.get("panel", {}), **({"safety_levels": tuple(data["panel"]["safety_levels"])} if "safety_levels" in data.get("panel", {}) else {})}),
-            phases=PhaseConfig(**data.get("phases", {})), loss=LossConfig(**data.get("loss", {})),
-            selection=SelectionConfig(**data.get("selection", {})), audit=AuditConfig(**data.get("audit", {})),
+            panel=_strict_dataclass(PanelConfig, panel_raw, "panel"),
+            phases=_strict_dataclass(PhaseConfig, dict(data.get("phases", {})), "phases"),
+            loss=_strict_dataclass(LossConfig, dict(data.get("loss", {})), "loss"),
+            selection=_strict_dataclass(SelectionConfig, dict(data.get("selection", {})), "selection"),
+            audit=_strict_dataclass(AuditConfig, dict(data.get("audit", {})), "audit"),
             seed=int(data.get("seed", 2407)), raw=data, path=None if path is None else Path(path),
         )
 

@@ -153,6 +153,10 @@ class ConservativeCorrectionStage(nn.Module):
         fields, n_src = raw_source.shape
         if n_src != pair.n_src:
             raise ValueError("source field does not match PairData")
+        if raw_source.dtype != torch.float32:
+            raise TypeError("progressive source fields must be float32")
+        if not bool(torch.isfinite(raw_source).all()):
+            raise ValueError("progressive source field contains non-finite values")
         if pair.edge_features.shape[1] != self.config.edge_dim:
             raise ValueError("edge feature dimension does not match stage configuration")
         gate_mode = self.config.deployment_gate_mode if gate_mode is None else gate_mode
@@ -240,25 +244,44 @@ class ConservativeCorrectionStage(nn.Module):
             * local_gate[:, pair.tgt_index] * reference_view
             * (score - score_mean[:, pair.tgt_index])
         ).to(torch.float64)
-        delta = project_correction(
+        projected_delta = project_correction(
             raw_delta, pair.src_index, pair.tgt_index, pair.area_tgt,
             pair.n_src, pair.n_tgt, iterations=self.config.projection_iterations,
         )
         # A global solve can redistribute an all-zero input at roundoff level.
         # Restore the exact identity floor after projection.
         accepted = field_gate != 0.0
-        delta = torch.where(accepted.view(-1, 1), delta, torch.zeros_like(delta))
-        correction = edge_sum_fields(
+        hard_delta = torch.where(
+            accepted.view(-1, 1), projected_delta, torch.zeros_like(projected_delta)
+        )
+        delta = (
+            hard_delta.detach() + projected_delta - projected_delta.detach()
+            if gate_mode == "straight_through" else hard_delta
+        )
+        proposed_correction = edge_sum_fields(
             delta * raw_source.to(delta.dtype)[:, pair.src_index], pair.tgt_index, pair.n_tgt
         ).to(raw_source.dtype)
-        correction = torch.where(accepted.view(-1, 1), correction, torch.zeros_like(correction))
+        hard_correction = torch.where(
+            accepted.view(-1, 1), proposed_correction, torch.zeros_like(proposed_correction)
+        )
+        correction = (
+            hard_correction.detach() + proposed_correction - proposed_correction.detach()
+            if gate_mode == "straight_through" else hard_correction
+        )
         output = prefix_output + correction
         row, column = correction_residuals(
             delta, pair.src_index, pair.tgt_index, pair.area_tgt, pair.n_src, pair.n_tgt
         )
+        if not bool(torch.isfinite(output).all()) or not bool(torch.isfinite(delta).all()):
+            raise RuntimeError(f"{self.name}: non-finite correction")
+        if float(row.abs().max()) > self.config.projection_row_tolerance:
+            raise RuntimeError(f"{self.name}: correction row constraint failed")
+        if float(column.abs().max()) > self.config.projection_column_tolerance:
+            raise RuntimeError(f"{self.name}: correction column constraint failed")
         return output, StageDiagnostics(
             self.name, output, delta, row, column, field_gate, local_gate,
             field_probability, local_probability,
+            output if gate_mode == "forced_open" else None,
         )
 
 

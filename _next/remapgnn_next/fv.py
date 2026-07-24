@@ -134,6 +134,8 @@ class FVBuildConfig:
     quadratic_ridge: float = 1.0e-3
     quadratic_relax: float = 1.0
     quadratic_iterations: int = 3
+    row_tolerance: float = 1.0e-8
+    column_tolerance: float = 1.0e-10
 
 
 def build_fv_operator(
@@ -174,6 +176,8 @@ def build_fv_operator(
             linear_ridge=config.linear_ridge, quadratic_ridge=config.quadratic_ridge,
             projection_iterations=config.projection_iterations,
             epsilon_relative=config.projection_epsilon_relative,
+            row_tolerance=config.row_tolerance,
+            column_tolerance=config.column_tolerance,
         )
     return SparseOperator.from_mass(
         src_index, tgt_index, mass, area_src, area_tgt,
@@ -243,7 +247,8 @@ def build_pair_from_files(
         network,
         source_node_features=moved["source"], target_node_features=moved["target"],
         edge_features=moved["edge"], src_index=moved["src_index"], tgt_index=moved["tgt_index"],
-        area_src=moved["area_src"], area_tgt=moved["area_tgt"],
+        area_src=torch.tensor(source_moments["area"], dtype=torch.float64, device=device),
+        area_tgt=torch.tensor(target_moments["area"], dtype=torch.float64, device=device),
         source_linear_moments=torch.tensor(source_moments["coordinate"], dtype=torch.float32, device=device),
         target_linear_moments=torch.tensor(target_moments["coordinate"], dtype=torch.float32, device=device),
         source_quadratic_moments=torch.tensor(source_moments["quadratic"], dtype=torch.float32, device=device),

@@ -34,18 +34,20 @@ Typical commands:
 PYTHONPATH=_next python _next/scripts/build_fv.py --config _next/configs/progressive.json --pair PAIR --output fv.pt
 PYTHONPATH=_next python _next/scripts/train.py --config _next/configs/progressive.json --device cuda
 PYTHONPATH=_next python _next/scripts/train.py --config _next/configs/progressive.json --device cuda --resume
-PYTHONPATH=_next python _next/scripts/audit.py --config _next/configs/progressive.json --device cuda
+PYTHONPATH=_next python _next/scripts/audit.py --config CONFIG --checkpoint CHECKPOINT --device cuda
 ```
 
-The configuration is validated into nested dataclasses. Its model section
+Schema-4 configuration rejects unknown and ignored fields and is validated
+into nested dataclasses. Its model section
 selects an approved clean checkpoint, an exact frozen prefix, a named train
 stage, and fresh or checkpoint initialization. Training panels are built for
 that selected stage rather than implicitly using the last checkpoint stage.
-Training builds source-keyed harmonic/mixture/analytic/real-field panels,
-balances both transfer regimes, authenticates all inputs, and writes an atomic
-checkpoint after every epoch. Capability selection restores the best
+Training builds source-keyed harmonic/mixture panels plus explicitly shared
+analytic/real safety anchors, balances both transfer regimes, freezes an input
+manifest before loading, and writes an atomic checkpoint after every epoch.
+Capability selection restores the best
 forced-open corrector; router training freezes that corrector and uses
-straight-through routing; hard deployment retains the original prefix as an
+benefit-taught straight-through routing; hard deployment retains the original prefix as an
 identity floor.
 
 Auditing loads np2 maps automatically and writes atomic detail CSV, summary
@@ -55,7 +57,7 @@ external-resolution pairs require the explicit `--allow-protected` flag.
 The verification command, run in the project PyTorch environment, is:
 
 ```bash
-PYTHONPATH=_next python -m unittest discover -s _next/tests -p 'test_*.py' -v
+./next test
 ```
 
 For use, refer to the repository-level `./next` command documented in

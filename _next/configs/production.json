@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "approved": false,
+  "checkpoint": "_next/checkpoints/progressive.pt",
+  "manifest": "_next/checkpoints/progressive.manifest.json",
+  "note": "Current checkpoint remains available; activate only after hardened equivalence passes."
+}

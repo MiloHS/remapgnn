@@ -35,7 +35,13 @@ def make_panel(parts: Iterable[FieldBatch]) -> FieldBatch:
 
 
 def assert_split_disjoint(*panels: FieldBatch):
-    sets = [set(panel.source_keys) for panel in panels]
+    sets = []
+    for panel in panels:
+        shared = panel.shared_anchor
+        sets.append({
+            key for index, key in enumerate(panel.source_keys)
+            if shared is None or not bool(shared[index])
+        })
     for left in range(len(sets)):
         for right in range(left + 1, len(sets)):
             overlap = sets[left] & sets[right]
@@ -45,7 +51,9 @@ def assert_split_disjoint(*panels: FieldBatch):
 
 def band_degrees(source_k, lower, upper, *, maximum=0, offset=0):
     first = max(1, int(np.floor(float(lower) * source_k)) + 1)
-    last = max(first, int(round(float(upper) * source_k)))
+    last = int(np.floor(float(upper) * source_k))
+    if last < first:
+        raise ValueError("configured target band has no realizable harmonic degree")
     degrees = list(range(first, last + 1))
     if maximum and len(degrees) > int(maximum):
         start = int(offset) % len(degrees)
@@ -71,7 +79,7 @@ def safety_degree(source_k, level, band_lower, band_upper):
             f"safety level {level} lies inside target band ({lower}, {upper}]"
         )
     first_target = max(1, int(np.floor(lower * source_k)) + 1)
-    last_target = max(first_target, int(round(upper * source_k)))
+    last_target = int(np.floor(upper * source_k))
     nearest = max(1, int(round(level * source_k)))
     if level <= lower:
         degree = min(nearest, first_target - 1)
@@ -83,19 +91,20 @@ def safety_degree(source_k, level, band_lower, band_upper):
     return max(nearest, last_target + 1)
 
 
-def _retag(batch, role, family, *, key_prefix=""):
+def _retag(batch, role, family, *, key_prefix="", shared=False):
     keys = [f"{key_prefix}{key}" for key in batch.source_keys]
     count = batch.source.shape[0]
     target = role == "target"
     return FieldBatch(
         batch.source, batch.truth, batch.frequency, list(batch.labels), [role] * count,
         keys, [family] * count, torch.full((count,), target, dtype=torch.bool),
+        torch.full((count,), bool(shared), dtype=torch.bool),
     )
 
 
-def _harmonics(pair, degrees, modes, split, seed, sample_seed, role):
+def _harmonics(pair, degrees, modes, split, seed, sample_seed, role, divisor=6.0):
     source_key = pair.metadata.get("source_key", pair.pair.split("_to_", 1)[0])
-    source_k = np.sqrt(pair.n_src / 6.0)
+    source_k = np.sqrt(pair.n_src / float(divisor))
     return harmonic_batch(
         source_key=source_key,
         source_quadrature=pair.metadata["source_quadrature"],
@@ -103,18 +112,19 @@ def _harmonics(pair, degrees, modes, split, seed, sample_seed, role):
         degrees=degrees, modes_per_degree=modes, split=split, seed=seed,
         area_src=pair.area_src.detach().cpu().numpy(), role=role,
         pair_key=pair.pair, sample_seed=sample_seed,
+        frequency_cells_per_k_squared=divisor,
     ), source_k
 
 
 def _level_harmonics(
-    pair, levels, modes, split, seed, sample_seed, *, band_lower, band_upper
+    pair, levels, modes, split, seed, sample_seed, *, band_lower, band_upper, divisor
 ):
-    source_k = np.sqrt(pair.n_src / 6.0)
+    source_k = np.sqrt(pair.n_src / float(divisor))
     parts = []
     for level_index, level in enumerate(levels):
         degree = safety_degree(source_k, level, band_lower, band_upper)
         batch, _ = _harmonics(
-            pair, [degree], modes, split, seed, sample_seed + 101 * level_index, "safety"
+            pair, [degree], modes, split, seed, sample_seed + 101 * level_index, "safety", divisor
         )
         # Preserve the realizable harmonic frequency degree/K.  It equals the
         # requested level only when level*K is integral; this distinction is
@@ -122,6 +132,7 @@ def _level_harmonics(
         batch = FieldBatch(
             batch.source, batch.truth, batch.frequency,
             batch.labels, batch.roles, batch.source_keys, ["guard_mode"] * batch.source.shape[0],
+            torch.zeros(batch.source.shape[0], dtype=torch.bool),
             torch.zeros(batch.source.shape[0], dtype=torch.bool),
         )
         parts.append(batch)
@@ -140,7 +151,8 @@ def build_panel(
     modes = 1 if smoke else (panel.audit_modes_per_degree if audit else panel.modes_per_degree)
     degrees = band_degrees(source_k, stage.band_lower, stage.band_upper,
                            maximum=maximum, offset=epoch)
-    target, _ = _harmonics(pair, degrees, modes, split, seed, seed + 1009 * int(epoch), "target")
+    target, _ = _harmonics(pair, degrees, modes, split, seed, seed + 1009 * int(epoch),
+                           "target", panel.frequency_cells_per_k_squared)
     target = _retag(target, "target", "target_mode")
     mixture_count = 0 if smoke else (panel.audit_target_mixtures if audit else panel.target_mixtures)
     target_mix = balanced_mixtures(target, pair.area_src.cpu(), mixture_count, seed + 4001 * int(epoch), role="target")
@@ -151,6 +163,7 @@ def build_panel(
     safety = _level_harmonics(
         pair, levels, safety_modes, split, seed, seed + 2003 * int(epoch),
         band_lower=stage.band_lower, band_upper=stage.band_upper,
+        divisor=panel.frequency_cells_per_k_squared,
     )
     safety_mix_count = 0 if smoke else (panel.audit_safety_mixtures if audit else panel.safety_mixtures)
     safety_mix = balanced_mixtures(safety, pair.area_src.cpu(), safety_mix_count,
@@ -161,7 +174,13 @@ def build_panel(
         pair.metadata["source_quadrature"], pair.metadata["target_quadrature"],
         pair.area_src.detach().cpu().numpy(),
     )
-    analytic = _retag(analytic, "safety", "smooth")
+    source_key = pair.metadata.get("source_key", pair.pair.split("_to_", 1)[0])
+    analytic = FieldBatch(
+        analytic.source, analytic.truth, analytic.frequency, analytic.labels, analytic.roles,
+        [f"{source_key}:{key}" for key in analytic.source_keys], analytic.families,
+        analytic.target_mask, analytic.shared_anchor,
+    )
+    analytic = _retag(analytic, "safety", "smooth", shared=True)
     pieces = [target, target_mix, safety, safety_mix, analytic]
     if not smoke:
         real = real_field_batch(

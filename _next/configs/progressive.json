@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "run_name": "progressive_next",
   "seed": 2407,
   "pair_roles": {
@@ -19,14 +19,12 @@
     "history": "progressive_next_history.csv"
   },
   "features": {
-    "edge": ["area_ratio_tgt_over_src", "log_area_ratio_tgt_over_src", "knn_rank_over_target_count", "target_candidate_count_log", "source_candidate_count_log", "tan_dist_over_h_src", "tan_dist_over_h_tgt", "tan_dist_over_h_mean"],
-    "source": ["src_area", "src_h", "log_src_area"],
-    "target": ["tgt_area", "tgt_h", "log_tgt_area"],
-    "sample_per_pair": 80000
+    "edge": ["area_ratio_tgt_over_src", "log_area_ratio_tgt_over_src", "knn_rank_over_target_count", "target_candidate_count_log", "source_candidate_count_log", "tan_dist_over_h_src", "tan_dist_over_h_tgt", "tan_dist_over_h_mean"]
   },
   "fv_checkpoint": "_next/checkpoints/fv_relax1.pt",
   "model": {
     "source_checkpoint": "_next/checkpoints/progressive.pt",
+    "source_manifest": "_next/checkpoints/progressive.manifest.json",
     "prefix_through": "mid_band",
     "train_stage": "high_band",
     "initialization": "fresh"
@@ -51,12 +49,14 @@
   "loss": {
     "guard_tolerance": 0.005, "fv_guard_tolerance": 0.02, "cvar_fraction": 0.25,
     "guard_weight": 6.0, "local_weight": 0.5, "gate_teacher_weight": 0.1,
-    "safety_gate_weight": 0.05, "correction_weight": 0.00001
+    "safety_gate_weight": 0.05, "correction_weight": 0.00001,
+    "router_teacher_temperature": 0.1
   },
   "selection": {"capability_minimum_improvement": 0.001, "final_minimum_gain": 0.02, "safety_tolerance": 0.02, "prior_band_tolerance": 0.01},
   "audit": {
     "row_tolerance": 1e-8, "column_tolerance": 1e-10, "minimum_target_gain": 0.03,
     "maximum_safety_regression": 0.02, "maximum_prior_band_regression": 0.01,
-    "maximum_fv_regression": 0.02, "field_batch": 2, "timing_repeats": 5
+    "maximum_fv_regression": 0.02, "field_batch": 2, "timing_repeats": 5,
+    "zero_error_tolerance": 1e-14
   }
 }

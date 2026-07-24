@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -17,7 +18,7 @@ from remapgnn_next.config import load_config, ModelConfig, StageConfig
 from remapgnn_next.constraints import correction_residuals, project_correction
 from remapgnn_next.fields import source_keyed_mode_split
 from remapgnn_next.progressive import ConservativeCorrectionStage, ProgressiveRemapper
-from remapgnn_next.provenance import file_sha256, tensor_state_sha256
+from remapgnn_next.provenance import file_sha256, object_sha256, tensor_state_sha256
 from remapgnn_next.sparse import apply_operator, index_sum
 from remapgnn_next.training import (
     cvar, identity_floor_selection, pair_weights, progressive_loss,
@@ -50,7 +51,7 @@ def synthetic_pair(name="coarse", n_src=4, n_tgt=3):
 class WorkflowTests(unittest.TestCase):
     def test_typed_config_and_role_disjointness(self):
         config = load_config("_next/configs/progressive.json")
-        self.assertEqual(config.schema_version, 3)
+        self.assertEqual(config.schema_version, 4)
         self.assertEqual(config.model.train_stage, "high_band")
         self.assertEqual(config.model.prefix_through, "mid_band")
         self.assertEqual(config.model.initialization, "fresh")
@@ -85,10 +86,24 @@ class WorkflowTests(unittest.TestCase):
                 "runtime_data": {"edge_features": list(config.features.edge)},
                 "stages": [item(prefix), item(old_stage)],
             }, source)
+            evidence = Path(directory) / "equivalence.json"
+            evidence.write_text(json.dumps({
+                "passed": True, "checkpoint_sha256": file_sha256(source)
+            }))
+            manifest = Path(directory) / "source.manifest.json"
+            manifest.write_text(json.dumps({
+                "format": "remapgnn.production_manifest", "schema_version": 1,
+                "checkpoint_sha256": file_sha256(source),
+                "fv_checkpoint": {"path": str(source), "sha256": file_sha256(source)},
+                "equivalence_report": {
+                    "path": str(evidence), "sha256": file_sha256(evidence)
+                },
+            }))
             local = replace(
                 config,
                 model=ModelConfig(
-                    source_checkpoint=str(source), prefix_through="mid_band",
+                    source_checkpoint=str(source), source_manifest=str(manifest),
+                    prefix_through="mid_band",
                     train_stage="high_band", initialization="fresh",
                 ),
             )
@@ -113,12 +128,29 @@ class WorkflowTests(unittest.TestCase):
                     stage.config.to_dict() for stage in model.stages
                 ],
                 "best_model_state": model.state_dict(),
+                "model_state": model.state_dict(),
+                "optimizer_state": None,
+                "capability_best_state": model.state_dict(),
                 "identity_model_state": model.state_dict(),
                 "provenance": {
+                    "format": "remapgnn.run_manifest",
+                    "schema_version": 1,
                     "source_checkpoint": {
                         "path": str(source), "sha256": file_sha256(source)
-                    }
+                    },
+                    "source_manifest": {
+                        "path": str(manifest), "sha256": file_sha256(manifest)
+                    },
+                    "fv_checkpoint": {"path": str(source), "sha256": file_sha256(source)},
+                    "config_file": None, "implementation_sha256": {}, "data": {},
+                    "smoke": False, "environment": {},
                 },
+            }
+            candidate["state_sha256"] = {
+                name: object_sha256(candidate[name]) for name in (
+                    "model_state", "optimizer_state", "identity_model_state",
+                    "capability_best_state", "best_model_state",
+                )
             }
             restored, _, restored_source = load_training_checkpoint(candidate)
             self.assertEqual(restored_source, source)
@@ -137,7 +169,8 @@ class WorkflowTests(unittest.TestCase):
                 local,
                 stages=(prefix_config, incompatible_stage),
                 model=ModelConfig(
-                    source_checkpoint=str(source), prefix_through="mid_band",
+                    source_checkpoint=str(source), source_manifest=str(manifest),
+                    prefix_through="mid_band",
                     train_stage="high_band", initialization="checkpoint",
                 ),
             )
@@ -173,7 +206,7 @@ class WorkflowTests(unittest.TestCase):
         ):
             result = panels._level_harmonics(
                 pair, [0.5], 1, "audit", 2407, 99,
-                band_lower=1.25, band_upper=1.5,
+                band_lower=1.25, band_upper=1.5, divisor=6.0,
             )
         self.assertTrue(torch.equal(result.frequency, frequency))
 

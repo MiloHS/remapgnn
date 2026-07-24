@@ -22,9 +22,6 @@ Use the commands:
 ```bash
 ./next status
 ./next test
-./next smoke
-./next train
-./next resume
 ./next audit --pairs CS-r64_to_ICOD-r64 ICO-r32_to_CS-r32
 ```
 
@@ -38,7 +35,8 @@ Run `./next help` for the complete command list.
    ./next status
    ```
 
-2. After changing training settings, run the short two-phase check:
+2. After a detached production manifest has been approved, run the short
+   two-phase check:
 
    ```bash
    ./next smoke
@@ -51,10 +49,12 @@ Run `./next help` for the complete command list.
    ./next resume
    ```
 
-4. Audit the completed candidate:
+4. Audit the completed candidate with explicit inputs:
 
    ```bash
-   ./next audit-candidate
+   ./next audit-candidate \
+     --config _next/configs/high_band_candidate_01.json \
+     --checkpoint _next/checkpoints/high_band_candidate_01.pt
    ```
 
 The cluster equivalents are:
@@ -62,7 +62,8 @@ The cluster equivalents are:
 - `jobs_next_train.pbs`
 - `jobs_next_audit.pbs`
 
-These jobs are intentionally not submitted automatically.
+Use `submit_next_workflow.sh --dry-run` to inspect the authenticated dependency
+chain before submitting it. The helper never runs from tests.
 Run `./next smoke` interactively when the capability/router/resume integration
 path needs a short check.
 
@@ -70,7 +71,8 @@ path needs a short check.
 
 - Active configuration: `_next/configs/progressive.json`
 - Development configuration: `_next/configs/high_band_candidate_01.json`
-- Approved clean checkpoint (gitignored): `_next/checkpoints/progressive.pt`
+- Current pre-hardening checkpoint (gitignored): `_next/checkpoints/progressive.pt`
+- Production pointer: `_next/configs/production.json`
 - Frozen clean FV checkpoint (gitignored): `_next/checkpoints/fv_relax1.pt`
 - Detailed guide: `docs/ACTIVE_WORKFLOW.md`
 - Project history and current research direction: `docs/PROJECT_HISTORY.md`
@@ -100,5 +102,8 @@ The archive description is local only and is deliberately not part of GitHub.
 
 ## Current research boundary
 
-The next task is improving the high-band correction training recipe.
+The implementation-audit fixes are present, but production remains deliberately
+unapproved until new equivalence evidence and its detached manifest pass.
+After that cutover, the next task is retraining the high-band correction with
+the corrected band and benefit-based router.
 Later we will rebuild FV cleanly.

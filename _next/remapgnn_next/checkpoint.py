@@ -4,17 +4,18 @@ from pathlib import Path
 from typing import Mapping
 
 import torch
+import json
 
 from .config import ExperimentConfig, StageConfig
 from .progressive import ConservativeCorrectionStage, ProgressiveRemapper
-from .provenance import file_sha256, tensor_state_sha256
+from .provenance import file_sha256, object_sha256, tensor_state_sha256, verify_run_manifest
 
 
 CLEAN_FV_FORMAT = "remapgnn.clean_fv"
 CLEAN_PROGRESSIVE_FORMAT = "remapgnn.clean_progressive"
 CLEAN_TRAINING_FORMAT = "remapgnn.clean_training"
 PROGRESSIVE_SCHEMA_VERSION = 1
-TRAINING_SCHEMA_VERSION = 3
+TRAINING_SCHEMA_VERSION = 4
 
 STRUCTURAL_STAGE_FIELDS = (
     "edge_dim",
@@ -39,11 +40,7 @@ def _validated_progressive_pack(path, *, require_production=False):
     ):
         raise ValueError("not a supported clean progressive checkpoint")
     if require_production:
-        if not pack.get("production", False):
-            raise ValueError("checkpoint is not marked as a production conversion")
-        equivalence = pack.get("conversion_checks", {}).get("equivalence", {})
-        if not equivalence.get("passed", False):
-            raise ValueError("production checkpoint has no passing equivalence record")
+        raise ValueError("production loading requires a detached manifest")
     for item in pack.get("stages", ()):
         expected = item.get("state_sha256")
         if expected and tensor_state_sha256(item["state"]) != expected:
@@ -59,8 +56,37 @@ def _stage_from_item(item, *, config=None):
     return stage
 
 
-def load_progressive_checkpoint(path, base_operator=None, *, require_production=False):
-    pack = _validated_progressive_pack(path, require_production=require_production)
+def validate_production_manifest(path, manifest_path):
+    manifest_path = Path(manifest_path)
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("format") != "remapgnn.production_manifest" or manifest.get("schema_version") != 1:
+        raise ValueError("unsupported production manifest")
+    if file_sha256(path) != manifest.get("checkpoint_sha256"):
+        raise ValueError("production checkpoint does not match detached manifest")
+    fv = manifest.get("fv_checkpoint", {})
+    if not fv or file_sha256(fv["path"]) != fv.get("sha256"):
+        raise ValueError("FV checkpoint does not match detached manifest")
+    report = Path(manifest["equivalence_report"]["path"])
+    if file_sha256(report) != manifest["equivalence_report"]["sha256"]:
+        raise ValueError("equivalence report does not match detached manifest")
+    evidence = json.loads(report.read_text())
+    if not evidence.get("passed", evidence.get("checks", {}).get("passed", False)):
+        raise ValueError("equivalence report did not pass")
+    recorded = evidence.get("checkpoint_sha256") or \
+        evidence.get("values", {}).get("clean_checkpoint", {}).get("sha256")
+    if recorded != manifest["checkpoint_sha256"]:
+        raise ValueError("equivalence evidence names a different checkpoint")
+    return manifest
+
+
+def load_progressive_checkpoint(
+    path, base_operator=None, *, require_production=False, manifest_path=None
+):
+    pack = _validated_progressive_pack(path, require_production=False)
+    if require_production:
+        if manifest_path is None:
+            raise ValueError("a detached production manifest is required")
+        validate_production_manifest(path, manifest_path)
     stages = [_stage_from_item(item) for item in pack["stages"]]
     return ProgressiveRemapper(base_operator, stages), pack
 
@@ -88,7 +114,8 @@ def _structural_match(expected: StageConfig, actual: StageConfig):
 def build_training_model(config: ExperimentConfig, source=None):
     """Build the configured prefix plus exactly one selected trainable stage."""
     source_path = Path(source or config.model.source_checkpoint)
-    pack = _validated_progressive_pack(source_path, require_production=True)
+    pack = _validated_progressive_pack(source_path, require_production=False)
+    validate_production_manifest(source_path, config.model.source_manifest)
     source_items = list(pack["stages"])
     source_configs = [StageConfig.from_dict(item["config"]) for item in source_items]
     source_by_name = {value.name: (value, item) for value, item in zip(source_configs, source_items)}
@@ -169,6 +196,16 @@ def load_training_checkpoint(path_or_pack, *, require_completed=True):
         raise ValueError("not a supported clean training checkpoint")
     if require_completed and not pack.get("completed", False):
         raise ValueError("training checkpoint is incomplete")
+    verify_run_manifest(pack.get("provenance", {}))
+    required_hashes = {
+        "model_state", "optimizer_state", "identity_model_state",
+        "capability_best_state", "best_model_state",
+    }
+    if set(pack.get("state_sha256", {})) != required_hashes:
+        raise ValueError("training checkpoint has incomplete state hashes")
+    for name, expected in pack["state_sha256"].items():
+        if object_sha256(pack.get(name)) != expected:
+            raise ValueError(f"training checkpoint state hash mismatch: {name}")
     configs = [StageConfig.from_dict(value) for value in pack["model_stage_configs"]]
     model = ProgressiveRemapper(
         None, [ConservativeCorrectionStage(value) for value in configs]
@@ -188,7 +225,7 @@ def load_training_checkpoint(path_or_pack, *, require_completed=True):
     actual = file_sha256(source_path)
     if actual != source.get("sha256"):
         raise ValueError("training source checkpoint hash mismatch")
-    progressive_pack = _validated_progressive_pack(source_path, require_production=True)
+    progressive_pack = _validated_progressive_pack(source_path, require_production=False)
     return model, progressive_pack, source_path
 
 

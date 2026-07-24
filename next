@@ -5,16 +5,44 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT_DIR"
 
 if [[ -n "${REMAPGNN_PYTHON:-}" ]]; then
-  PYTHON_BIN="$REMAPGNN_PYTHON"
-elif [[ -x /gpfs/fs1/home/mschlittgenli/.conda/envs/remap_gpu/bin/python ]]; then
-  PYTHON_BIN=/gpfs/fs1/home/mschlittgenli/.conda/envs/remap_gpu/bin/python
+  if [[ "$REMAPGNN_PYTHON" == */* ]]; then
+    [[ -x "$REMAPGNN_PYTHON" ]] || {
+      echo "REMAPGNN_PYTHON is not executable: $REMAPGNN_PYTHON" >&2
+      exit 2
+    }
+    PYTHON_BIN="$REMAPGNN_PYTHON"
+  else
+    PYTHON_BIN=$(command -v "$REMAPGNN_PYTHON") || {
+      echo "REMAPGNN_PYTHON was not found on PATH: $REMAPGNN_PYTHON" >&2
+      exit 2
+    }
+  fi
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+  PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+  PYTHON_BIN="$CONDA_PREFIX/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN=$(command -v python3)
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=$(command -v python)
 else
-  PYTHON_BIN=python3
+  echo "No Python interpreter found. Activate the project environment or set REMAPGNN_PYTHON." >&2
+  exit 2
+fi
+
+if ! "$PYTHON_BIN" -B -c 'import numpy, torch' >/dev/null 2>&1; then
+  echo "Selected Python lacks required packages: $PYTHON_BIN" >&2
+  echo "Activate the project environment or set REMAPGNN_PYTHON to its Python executable." >&2
+  exit 2
 fi
 
 export PYTHONPATH="$ROOT_DIR/_next${PYTHONPATH:+:$PYTHONPATH}"
 CONFIG="$ROOT_DIR/_next/configs/progressive.json"
-PRODUCTION="$ROOT_DIR/_next/checkpoints/progressive.pt"
+PRODUCTION_POINTER="$ROOT_DIR/_next/configs/production.json"
+read -r PRODUCTION PRODUCTION_MANIFEST < <(
+  "$PYTHON_BIN" -B -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["checkpoint"], p["manifest"])' \
+    "$PRODUCTION_POINTER"
+)
 
 usage() {
   cat <<'EOF'
@@ -54,7 +82,7 @@ case "$command_name" in
     exec "$PYTHON_BIN" -B "$ROOT_DIR/_next/scripts/status.py" "$@"
     ;;
   test)
-    exec "$PYTHON_BIN" -B -m unittest discover -s "$ROOT_DIR/_next/tests" -p 'test_*.py' -v
+    exec "$PYTHON_BIN" -B -m pytest "$ROOT_DIR/_next/tests" -v
     ;;
   smoke)
     exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/train.py" \
@@ -71,16 +99,20 @@ case "$command_name" in
   audit)
     exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
       --config "$CONFIG" --device cuda --checkpoint "$PRODUCTION" \
-      --require-production "$@"
+      --manifest "$PRODUCTION_MANIFEST" --require-production "$@"
     ;;
   audit-candidate)
+    if [[ "$*" != *"--config"* || "$*" != *"--checkpoint"* ]]; then
+      echo "audit-candidate requires explicit --config and --checkpoint" >&2
+      exit 2
+    fi
     exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
-      --config "$CONFIG" --device cuda "$@"
+      --device cuda "$@"
     ;;
   audit-protected)
     exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
       --config "$CONFIG" --device cuda --checkpoint "$PRODUCTION" \
-      --require-production --allow-protected "$@"
+      --manifest "$PRODUCTION_MANIFEST" --require-production --allow-protected "$@"
     ;;
   build-fv)
     if [[ $# -lt 2 ]]; then

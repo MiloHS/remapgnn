@@ -15,30 +15,43 @@ from remapgnn_next.checkpoint import (
 from remapgnn_next.evaluation import audit_experiment
 from remapgnn_next.fv import build_pair_from_files
 from remapgnn_next.provenance import authenticated_load
+from remapgnn_next.provenance import canonical_json_sha256
 
 
 def main():
     parser = argparse.ArgumentParser(description="Audit all clean progressive prefixes")
-    parser.add_argument("--config", default="_next/configs/progressive.json")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--checkpoint")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--manifest")
     parser.add_argument("--pairs", nargs="+")
     parser.add_argument("--allow-protected", action="store_true")
     parser.add_argument("--tag", default="development")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--require-production", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    checkpoint = Path(args.checkpoint or config.paths.checkpoint_path)
-    if args.smoke and not args.checkpoint:
-        checkpoint = checkpoint.with_name(checkpoint.stem + "_smoke.pt")
+    checkpoint = Path(args.checkpoint)
+    print(
+        f"AUDIT_INPUT config={Path(args.config).resolve()} "
+        f"checkpoint={checkpoint.resolve()}",
+        flush=True,
+    )
     pack, _ = authenticated_load(checkpoint)
     if pack.get("format") == CLEAN_TRAINING_FORMAT:
+        if args.require_production:
+            raise ValueError("--require-production rejects training checkpoints")
+        if canonical_json_sha256(pack.get("config")) != canonical_json_sha256(config.to_dict()):
+            raise ValueError("audit config differs from candidate's saved scientific config")
         model, progressive_pack, source = load_training_checkpoint(pack)
     elif pack.get("format") == CLEAN_PROGRESSIVE_FORMAT:
         source = checkpoint; progressive_pack = pack
-        model, _ = load_progressive_checkpoint(source, require_production=args.require_production)
+        model, _ = load_progressive_checkpoint(
+            source, require_production=args.require_production,
+            manifest_path=args.manifest if args.require_production else None,
+        )
     else:
         raise ValueError("unsupported clean checkpoint")
     fv_pack, fv_sha256 = authenticated_load(config.fv_checkpoint)
@@ -58,7 +71,8 @@ def main():
         )
         print(f"[{name}] built={time.time()-started:.1f}s", flush=True)
     report = audit_experiment(model.to(args.device), config, pairs, checkpoint,
-                              device=args.device, smoke=args.smoke, tag=args.tag)
+                              device=args.device, smoke=args.smoke, tag=args.tag,
+                              overwrite=args.overwrite)
     print(f"AUDIT_DONE passed={report.promotion['passed']} failures={len(report.promotion['failures'])}")
     for failure in report.promotion["failures"]: print(f"  FAIL: {failure}")
     raise SystemExit(0 if report.promotion["passed"] else 2)

@@ -13,9 +13,9 @@ import torch
 import torch.nn.functional as F
 
 from .checkpoint import CLEAN_TRAINING_FORMAT, TRAINING_SCHEMA_VERSION
-from .evaluation import area_relative_l2
+from .evaluation import area_relative_l2, safe_ratio
 from .panels import build_panel
-from .provenance import canonical_json_sha256, file_sha256, tensor_state_sha256
+from .provenance import object_sha256, tensor_state_sha256, verify_run_manifest
 
 
 CHECKPOINT_FORMAT = CLEAN_TRAINING_FORMAT
@@ -37,6 +37,8 @@ def set_seed(seed):
 
 
 def identity_floor_selection(candidate_score, prefix_score, minimum_improvement=0.0):
+    if not all(np.isfinite(x) for x in (candidate_score, prefix_score, minimum_improvement)):
+        return False
     return float(candidate_score) < float(prefix_score) - float(minimum_improvement)
 
 
@@ -70,7 +72,25 @@ def normalized_mse(prediction, truth, area):
         (area * truth.square()).sum(1).clamp_min(1.0e-20)
 
 
-def progressive_loss(stage_diagnostic, fv_output, prefix_output, truth, target_mask, area, weights, *, train_router):
+def benefit_teacher_labels(prefix_output, open_output, truth, area, temperature):
+    prefix_error = normalized_mse(prefix_output, truth, area).detach()
+    open_error = normalized_mse(open_output, truth, area).detach()
+    field_benefit = (prefix_error - open_error) / \
+        (prefix_error + open_error).clamp_min(1e-20)
+    prefix_point = (prefix_output.detach() - truth).square()
+    open_point = (open_output.detach() - truth).square()
+    local_benefit = (prefix_point - open_point) / \
+        (prefix_point + open_point).clamp_min(1e-20)
+    return (
+        torch.sigmoid(field_benefit / float(temperature)),
+        torch.sigmoid(local_benefit / float(temperature)),
+    )
+
+
+def progressive_loss(
+    stage_diagnostic, fv_output, prefix_output, truth, target_mask, area, weights,
+    *, train_router, benefit_output=None,
+):
     current = normalized_mse(stage_diagnostic.output, truth, area)
     prefix = normalized_mse(prefix_output, truth, area).detach()
     fv = normalized_mse(fv_output, truth, area).detach()
@@ -90,10 +110,17 @@ def progressive_loss(stage_diagnostic, fv_output, prefix_output, truth, target_m
     correction = stage_diagnostic.delta_weight.square().mean()
     teacher = current.new_zeros(()); safety_gate = current.new_zeros(())
     if train_router:
-        label = target.to(stage_diagnostic.field_probability.dtype)
-        teacher = F.binary_cross_entropy(stage_diagnostic.field_probability, label)
+        if benefit_output is None:
+            raise ValueError("router training requires a forced-open benefit output")
+        field_label, local_label = benefit_teacher_labels(
+            prefix_output, benefit_output, truth, area,
+            weights.router_teacher_temperature,
+        )
+        field_label = field_label.to(stage_diagnostic.field_probability.dtype)
+        local_label = local_label.to(stage_diagnostic.local_probability.dtype)
+        teacher = F.binary_cross_entropy(stage_diagnostic.field_probability, field_label)
         teacher = teacher + F.binary_cross_entropy(
-            stage_diagnostic.local_probability, label[:, None].expand_as(stage_diagnostic.local_probability)
+            stage_diagnostic.local_probability, local_label
         )
         safety_gate = cvar(stage_diagnostic.field_probability[safety], weights.cvar_fraction) + cvar(
             stage_diagnostic.local_probability[safety].mean(1), weights.cvar_fraction
@@ -143,6 +170,12 @@ def pair_weights(pairs: Mapping[str, object]):
 
 
 def selection_score(metrics, selection, audit):
+    numeric = [
+        item for value in metrics.values() for item in value.values()
+        if isinstance(item, (float, np.floating))
+    ]
+    if not numeric or any(not np.isfinite(item) for item in numeric):
+        return (float("inf"),) * 5
     target = max(value["target_mean_ratio_vs_prefix"] for value in metrics.values())
     safety = max(value["safety_worst_ratio_vs_prefix"] for value in metrics.values())
     fv = max(value["safety_worst_ratio_vs_fv"] for value in metrics.values())
@@ -173,7 +206,8 @@ def evaluate_selection(model, pairs, panels, stage_index, config, gate_mode, dev
             rows.append(float(stage.row_residual.abs().max())); columns.append(float(stage.column_residual.abs().max()))
         current, prefix, fv = map(np.asarray, (errors, prefix_errors, fv_errors))
         target = panel.is_target.cpu().numpy(); safety = ~target
-        ratio_prefix = current / np.maximum(prefix, 1e-20); ratio_fv = current / np.maximum(fv, 1e-20)
+        ratio_prefix = safe_ratio(current, prefix, config.audit.zero_error_tolerance)
+        ratio_fv = safe_ratio(current, fv, config.audit.zero_error_tolerance)
         frequency = panel.frequency.cpu().numpy()
         previous = (
             model.stages[stage_index - 1].config
@@ -218,7 +252,7 @@ class SequentialTrainer:
 
     def __init__(self, model, stage_index, *, config=None, train_pairs=None, selection_pairs=None,
                  source_checkpoint=None, model_initialization=None, output=None,
-                 history_path=None, device="cpu"):
+                 history_path=None, device="cpu", run_manifest=None):
         self.model = model; self.stage_index = int(stage_index); self.config = config
         self.train_pairs = train_pairs or {}; self.selection_pairs = selection_pairs or {}
         self.source_checkpoint = None if source_checkpoint is None else Path(source_checkpoint)
@@ -228,32 +262,20 @@ class SequentialTrainer:
         self.output = Path(output) if output else (config.paths.checkpoint_path if config else None)
         self.history_path = Path(history_path) if history_path else (config.paths.history_path if config else None)
         self.device = torch.device(device)
+        self.run_manifest = copy.deepcopy(run_manifest)
         if not 0 <= self.stage_index < len(model.stages): raise IndexError("stage_index outside model")
 
     @property
     def stage(self): return self.model.stages[self.stage_index]
 
-    def _auth(self):
-        config_value = self.config.to_dict()
-        files = sorted(Path(__file__).parent.glob("*.py"))
-        return {
-            "config_sha256": canonical_json_sha256(config_value),
-            "implementation_sha256": {str(path.name): file_sha256(path) for path in files},
-            "data_sha256": {name: {
-                "edge": file_sha256(self.config.paths.edge_path(name)),
-                "map": file_sha256(self.config.paths.map_path(name)),
-            } for name in dict.fromkeys((*self.train_pairs, *self.selection_pairs))},
-            "source_checkpoint": None if self.source_checkpoint is None else {
-                "path": str(self.source_checkpoint), "sha256": file_sha256(self.source_checkpoint)},
-        }
-
     def _pack(self, state, optimizer, *, phase, epoch, completed, history, smoke):
-        return {
+        pack = {
             "format": CHECKPOINT_FORMAT, "schema_version": CHECKPOINT_SCHEMA,
             "completed": bool(completed), "smoke": bool(smoke), "stage_index": self.stage_index,
             "phase": phase, "epoch": int(epoch), "model_state": cpu_state(self.model),
             "optimizer_state": None if optimizer is None else optimizer.state_dict(),
             "identity_model_state": state["identity_state"], "identity_score": state["identity_score"],
+            "identity_selection_metrics": copy.deepcopy(state["identity_metrics"]),
             "capability_best_state": state["capability_state"], "capability_best_score": state["capability_score"],
             "capability_best_epoch": state["capability_epoch"], "capability_selected": state["capability_selected"],
             "best_model_state": state["final_state"], "final_best_score": state["final_score"],
@@ -262,20 +284,43 @@ class SequentialTrainer:
             "history": copy.deepcopy(history), "pair_roles": copy.deepcopy(self.config.pair_roles),
             "model_stage_configs": [stage.config.to_dict() for stage in self.model.stages],
             "model_initialization": copy.deepcopy(self.model_initialization),
-            "config": self.config.to_dict(), "provenance": self._auth(),
+            "config": self.config.to_dict(), "provenance": copy.deepcopy(self.run_manifest),
             "behavior": {"known_frequency_required": False, "adaptive_stopping": False,
                          "sequential_residual_training": True, "strict_prefix_freezing": True},
         }
+        pack["state_sha256"] = {
+            name: object_sha256(pack[name]) for name in (
+                "model_state", "optimizer_state", "identity_model_state",
+                "capability_best_state", "best_model_state",
+            )
+        }
+        return pack
 
     def _validate_resume(self, saved):
         if saved.get("format") != CHECKPOINT_FORMAT or saved.get("schema_version") != CHECKPOINT_SCHEMA:
             raise ValueError("resume checkpoint has the wrong clean schema")
         if saved["stage_index"] != self.stage_index: raise ValueError("resume stage differs")
-        if saved["provenance"] != self._auth(): raise ValueError("authenticated inputs changed since checkpoint")
+        if saved.get("provenance") != self.run_manifest:
+            raise ValueError("run manifest differs from checkpoint")
+        verify_run_manifest(self.run_manifest)
+        required_hashes = {
+            "model_state", "optimizer_state", "identity_model_state",
+            "capability_best_state", "best_model_state",
+        }
+        if set(saved.get("state_sha256", {})) != required_hashes:
+            raise ValueError("checkpoint has incomplete state hashes")
+        for name, expected in saved["state_sha256"].items():
+            if object_sha256(saved.get(name)) != expected:
+                raise ValueError(f"checkpoint state hash mismatch: {name}")
 
     def run(self, *, resume=False, smoke=False):
         if self.config is None or not self.train_pairs or not self.selection_pairs or self.output is None:
             raise ValueError("config, train/selection pairs, and output are required")
+        if self.run_manifest is None:
+            raise ValueError("an immutable run manifest is required")
+        if bool(self.run_manifest.get("smoke")) != bool(smoke):
+            raise ValueError("smoke/full mode differs from run manifest")
+        verify_run_manifest(self.run_manifest)
         set_seed(self.config.seed); self.model.to(self.device)
         train_names = list(self.train_pairs)[:1] if smoke else list(self.train_pairs)
         selection_names = train_names if smoke else list(self.selection_pairs)
@@ -291,10 +336,13 @@ class SequentialTrainer:
         if resume:
             saved = torch.load(self.output, map_location="cpu", weights_only=False); self._validate_resume(saved)
             self.model.load_state_dict(saved["model_state"])
-            if saved["completed"]: return saved
+            if saved["completed"]:
+                _write_history(self.history_path, saved.get("history", []))
+                return saved
         identity_state = copy.deepcopy(saved["identity_model_state"]) if saved else cpu_state(self.model)
         if saved:
             identity_score = float(saved["identity_score"])
+            identity_metrics = copy.deepcopy(saved["identity_selection_metrics"])
         else:
             identity_score, *_, identity_metrics = evaluate_selection(
                 self.model, selection_pairs, selection_panels, self.stage_index, self.config, "forced_closed", self.device
@@ -302,6 +350,7 @@ class SequentialTrainer:
         history = list(saved.get("history", [])) if saved else [{"phase": "identity", "epoch": 0, "selection_score": identity_score}]
         state = {
             "identity_state": identity_state, "identity_score": identity_score,
+            "identity_metrics": identity_metrics,
             "capability_state": copy.deepcopy(saved["capability_best_state"]) if saved else copy.deepcopy(identity_state),
             "capability_score": float(saved["capability_best_score"]) if saved else identity_score,
             "capability_epoch": int(saved["capability_best_epoch"]) if saved else 0,
@@ -348,6 +397,15 @@ class SequentialTrainer:
                             1 if smoke else self.config.phases.safety_batch, self.device)
                         part = panel.subset(index); pair = host_pair.to(self.device)
                         modes = [None] * len(self.model.stages); modes[self.stage_index] = gate_mode
+                        benefit_output = None
+                        if phase == "router":
+                            benefit_modes = [None] * len(self.model.stages)
+                            benefit_modes[self.stage_index] = "forced_open"
+                            with torch.no_grad():
+                                benefit_output = self.model(
+                                    pair, part.source, gate_modes=benefit_modes,
+                                    return_diagnostics=False,
+                                )
                         _, diagnostic = self.model(pair, part.source, gate_modes=modes, return_diagnostics=True)
                         stage_diag = diagnostic.stages[self.stage_index]
                         if float(stage_diag.row_residual.abs().max()) > self.config.audit.row_tolerance or \
@@ -356,7 +414,8 @@ class SequentialTrainer:
                         prefix = diagnostic.fv_output if self.stage_index == 0 else diagnostic.stage_outputs[self.stage_index - 1]
                         loss, log = progressive_loss(stage_diag, diagnostic.fv_output, prefix, part.truth,
                                                      part.is_target, pair.area_tgt, self.config.loss,
-                                                     train_router=phase == "router")
+                                                     train_router=phase == "router",
+                                                     benefit_output=benefit_output)
                         (loss * weights[name]).backward(); logs.append(log)
                     torch.nn.utils.clip_grad_norm_(parameters, self.config.phases.gradient_clip); optimizer.step()
                 assert_unchanged(frozen, frozen_snapshot, context=f"earlier stages during {phase}")
@@ -405,7 +464,8 @@ class SequentialTrainer:
             self.model.load_state_dict(state["capability_state"] if state["capability_selected"] else identity_state)
         if not state["capability_selected"]:
             state.update(final_state=copy.deepcopy(identity_state), final_score=identity_score,
-                         final_epoch=0, selected_identity=True)
+                         final_epoch=0, selected_identity=True,
+                         metrics=copy.deepcopy(state["identity_metrics"]))
         else:
             if saved_phase != "router": self.model.load_state_dict(state["capability_state"])
             expected_corrector = tensor_state_sha256({name: value for name, value in self.stage.state_dict().items()
@@ -430,7 +490,7 @@ class SequentialTrainer:
             state["selected_identity"] = not selected
             if not selected:
                 state.update(final_state=copy.deepcopy(identity_state), final_score=identity_score,
-                             final_epoch=0)
+                             final_epoch=0, metrics=copy.deepcopy(state["identity_metrics"]))
             self.model.load_state_dict(state["final_state"])
             state["corrector_hash"] = tensor_state_sha256({
                 name: value for name, value in self.stage.state_dict().items()

@@ -1,6 +1,8 @@
 # Active clean workflow
 
-`_next` is now the default runtime, trainer, and auditor. It uses:
+`_next` is the default runtime, trainer, and auditor. The current checkpoint
+remains available, but production training/audit is intentionally blocked
+until `_next/configs/production.json` names an approved detached manifest.
 
 - the frozen converted `relax1` finite-volume base;
 - the accepted mid-band correction;
@@ -28,27 +30,28 @@ The useful commands are:
 | `./next train` | Train the configured correction stage from the approved clean checkpoint. |
 | `./next resume` | Resume the authenticated candidate checkpoint. |
 | `./next audit` | Audit the approved converted checkpoint. |
-| `./next audit-candidate` | Audit the latest completed trained candidate. |
+| `./next audit-candidate --config ... --checkpoint ...` | Audit one explicit completed candidate. |
 | `./next audit-protected --pairs ...` | Explicitly consume protected or external pairs. |
 | `./next build-fv PAIR OUTPUT` | Build and save a clean FV operator for one pair. |
 
-Set `REMAPGNN_PYTHON=/path/to/python` only when a different Python environment
-is needed. On the project system, `./next` automatically uses the established
-GPU environment.
+`./next` uses `REMAPGNN_PYTHON` when supplied, then the active virtual/Conda
+environment, then `python3`/`python` from `PATH`. PBS jobs use
+`conda run -n remap_gpu`; override the portable environment name with
+`REMAPGNN_CONDA_ENV` when needed.
 
 ## Cluster jobs
 
 Submit these from the repository root:
 
 ```bash
-/opt/pbs/bin/qsub jobs_next_train.pbs
-/opt/pbs/bin/qsub jobs_next_audit.pbs
+./submit_next_workflow.sh --config CONFIG --checkpoint CHECKPOINT --dry-run
+./submit_next_workflow.sh --config CONFIG --checkpoint CHECKPOINT
 ```
 
 Optional command-line arguments can be supplied through `EXTRA`, for example:
 
 ```bash
-EXTRA="--stage high_band" /opt/pbs/bin/qsub jobs_next_train.pbs
+/opt/pbs/bin/qsub -v 'EXTRA=--config _next/configs/progressive.json --stage high_band' jobs_next_train.pbs
 ```
 
 The audit job returns a nonzero status when promotion gates fail.

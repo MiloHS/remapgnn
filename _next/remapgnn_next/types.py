@@ -133,6 +133,13 @@ class PairData:
     fv_quad_tgt: torch.Tensor | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        if self.edge_features.dtype != torch.float32:
+            raise TypeError("PairData.edge_features must be float32")
+        for name in ("src_xyz", "tgt_xyz", "src_neighbor_weight", "tgt_neighbor_weight"):
+            if getattr(self, name).dtype != torch.float32:
+                raise TypeError(f"PairData.{name} must be float32")
+
     @property
     def src_index(self):
         return self.fv_operator.src_index
@@ -181,6 +188,7 @@ class FieldBatch:
     source_keys: Sequence[str] = ()
     families: Sequence[str] = ()
     target_mask: torch.Tensor | None = None
+    shared_anchor: torch.Tensor | None = None
 
     def __post_init__(self):
         n = int(self.source.shape[0])
@@ -197,6 +205,9 @@ class FieldBatch:
         if self.target_mask is not None:
             if self.target_mask.dtype != torch.bool or tuple(self.target_mask.shape) != (n,):
                 raise ValueError("target_mask must be boolean with one entry per field")
+        if self.shared_anchor is not None:
+            if self.shared_anchor.dtype != torch.bool or tuple(self.shared_anchor.shape) != (n,):
+                raise ValueError("shared_anchor must be boolean with one entry per field")
 
     @property
     def is_target(self):
@@ -209,6 +220,7 @@ class FieldBatch:
             self.source.to(device), self.truth.to(device), self.frequency.to(device),
             list(self.labels), list(self.roles), list(self.source_keys), list(self.families),
             None if self.target_mask is None else self.target_mask.to(device),
+            None if self.shared_anchor is None else self.shared_anchor.to(device),
         )
 
     def subset(self, indices) -> "FieldBatch":
@@ -220,6 +232,7 @@ class FieldBatch:
             [self.source_keys[i] for i in host] if self.source_keys else [],
             [self.families[i] for i in host] if self.families else [],
             None if self.target_mask is None else self.target_mask[index],
+            None if self.shared_anchor is None else self.shared_anchor[index],
         )
 
 
@@ -234,6 +247,7 @@ class StageDiagnostics:
     local_gate: torch.Tensor
     field_probability: torch.Tensor
     local_probability: torch.Tensor
+    proposal_output: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)

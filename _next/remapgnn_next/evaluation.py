@@ -21,6 +21,21 @@ def area_relative_l2(prediction, truth, area, epsilon=1.0e-30):
     return (numerator / denominator).clamp_min(0.0).sqrt()
 
 
+def safe_ratio(numerator, denominator, tolerance):
+    numerator, denominator = np.broadcast_arrays(
+        np.asarray(numerator, dtype=np.float64),
+        np.asarray(denominator, dtype=np.float64),
+    )
+    result = np.empty(numerator.shape, dtype=np.float64)
+    both = (np.abs(numerator) <= tolerance) & (np.abs(denominator) <= tolerance)
+    zero_denominator = (np.abs(denominator) <= tolerance) & ~both
+    ordinary = ~(both | zero_denominator)
+    result[both] = 1.0
+    result[zero_denominator] = np.inf
+    result[ordinary] = numerator[ordinary] / denominator[ordinary]
+    return float(result) if result.ndim == 0 else result
+
+
 @dataclass(frozen=True)
 class AuditResult:
     names: tuple[str, ...]
@@ -50,8 +65,10 @@ def audit_progressive(model, pair, fields, *, np2_operator=None, safety_toleranc
     safety = ~fields.is_target.to(errors.device); regressions = {}; passed = True
     if len(predictions) > 1 and bool(safety.any()):
         baseline, final = errors[0, safety], errors[len(diagnostic.stage_outputs), safety]
-        relative = ((final - baseline) / baseline.clamp_min(1e-30)).max()
-        regressions["safety_vs_fv"] = float(relative); passed = bool(relative <= safety_tolerance)
+        ratio = safe_ratio(final.cpu().numpy(), baseline.cpu().numpy(), 1e-14)
+        relative = float(np.max(ratio - 1.0))
+        regressions["safety_vs_fv"] = relative
+        passed = bool(np.isfinite(relative) and relative <= safety_tolerance)
     return AuditResult(tuple(names), errors, tuple(fields.roles), passed, regressions), diagnostic
 
 
@@ -75,6 +92,17 @@ def _synchronize(device):
 def structural_checks(model, pair, sample, config, *, device):
     model.eval(); pair = pair.to(device); sample = sample.to(device)
     output, diagnostic = model(pair, sample, return_diagnostics=True)
+    tensors = [output, diagnostic.fv_output]
+    for stage in diagnostic.stages:
+        tensors.extend((stage.output, stage.delta_weight, stage.row_residual,
+                        stage.column_residual, stage.field_gate, stage.local_gate,
+                        stage.field_probability, stage.local_probability))
+        for value in (stage.field_gate, stage.local_gate, stage.field_probability,
+                      stage.local_probability):
+            if bool((value < 0).any()) or bool((value > 1).any()):
+                raise RuntimeError(f"{pair.pair}: routing value outside [0,1]")
+    if any(not bool(torch.isfinite(value).all()) for value in tensors):
+        raise RuntimeError(f"{pair.pair}: non-finite structural result")
     rows = {stage.name: float(stage.row_residual.abs().max()) for stage in diagnostic.stages}
     columns = {stage.name: float(stage.column_residual.abs().max()) for stage in diagnostic.stages}
     if max(rows.values(), default=0) > config.audit.row_tolerance or max(columns.values(), default=0) > config.audit.column_tolerance:
@@ -139,15 +167,16 @@ def audit_pair(model, pair, fields, np2, config, *, device):
                 "pair": pair.pair, "field_index": index,
                 "family": (fields.families or fields.roles)[index], "role": fields.roles[index],
                 "source_key": fields.source_keys[index] if fields.source_keys else "",
+                "shared_anchor": bool(fields.shared_anchor[index]) if fields.shared_anchor is not None else False,
                 "is_target_band": bool(fields.is_target[index]),
                 "is_prefix_band": bool(np.isfinite(frequency) and frequency > previous.band_lower and frequency <= previous.band_upper),
                 "degree": fields.labels[index][0], "order": fields.labels[index][1], "nu": frequency,
                 "model_rel_l2": model_error, "prefix_rel_l2": prefix_error, "fv_rel_l2": fv_error,
                 "np2_rel_l2": float(errors["np2"][local]),
-                "model_over_prefix": model_error / max(prefix_error, 1e-20),
-                "model_over_fv": model_error / max(fv_error, 1e-20),
-                "model_over_np2": model_error / max(float(errors["np2"][local]), 1e-20),
-                "prefix_over_fv": prefix_error / max(fv_error, 1e-20),
+                "model_over_prefix": safe_ratio(model_error, prefix_error, config.audit.zero_error_tolerance),
+                "model_over_fv": safe_ratio(model_error, fv_error, config.audit.zero_error_tolerance),
+                "model_over_np2": safe_ratio(model_error, float(errors["np2"][local]), config.audit.zero_error_tolerance),
+                "prefix_over_fv": safe_ratio(prefix_error, fv_error, config.audit.zero_error_tolerance),
             }
             for stage_index, stage in enumerate(diagnostics.stages):
                 row[f"{stage.name}_rel_l2"] = float(errors[stage.name][local])
@@ -177,24 +206,42 @@ def summarize(detail):
 
 def promotion_report(detail, structures, config, pairs):
     failures, pair_metrics = [], {}
+    if any(
+        not np.isfinite(value)
+        for row in detail for value in row.values()
+        if isinstance(value, (float, np.floating))
+    ):
+        failures.append("non-finite audit detail")
     for pair in pairs:
         rows = [x for x in detail if x["pair"] == pair]; target = [x for x in rows if x["is_target_band"]]
         safety = [x for x in rows if not x["is_target_band"]]; prior = [x for x in safety if x["is_prefix_band"]]
-        if not target or not safety or not prior:
-            failures.append(f"{pair}: incomplete target/safety/prior panel"); continue
+        if not target or not safety:
+            failures.append(f"{pair}: incomplete target/safety panel"); continue
         metric = {
             "target_model_over_prefix_mean": float(np.mean([x["model_over_prefix"] for x in target])),
             "target_model_over_prefix_worst": float(np.max([x["model_over_prefix"] for x in target])),
             "target_regression_count": sum(x["model_over_prefix"] > 1 for x in target),
             "safety_model_over_prefix_worst": float(np.max([x["model_over_prefix"] for x in safety])),
             "safety_model_over_fv_worst": float(np.max([x["model_over_fv"] for x in safety])),
-            "prefix_band_model_over_prefix_worst": float(np.max([x["model_over_prefix"] for x in prior])),
+            "prefix_band_model_over_prefix_worst": float(np.max(
+                [x["model_over_prefix"] for x in prior]
+            )) if prior else 1.0,
+            "prior_band_applicable": bool(prior),
         }; pair_metrics[pair] = metric
         if metric["target_model_over_prefix_mean"] > 1 - config.audit.minimum_target_gain: failures.append(f"{pair}: insufficient target gain")
         if metric["safety_model_over_prefix_worst"] > 1 + config.audit.maximum_safety_regression: failures.append(f"{pair}: safety regression vs prefix")
         if metric["safety_model_over_fv_worst"] > 1 + config.audit.maximum_fv_regression: failures.append(f"{pair}: safety regression vs FV")
-        if metric["prefix_band_model_over_prefix_worst"] > 1 + config.audit.maximum_prior_band_regression: failures.append(f"{pair}: prior-band regression")
+        if prior and metric["prefix_band_model_over_prefix_worst"] > 1 + config.audit.maximum_prior_band_regression: failures.append(f"{pair}: prior-band regression")
     for value in structures:
+        if value.get("error"):
+            failures.append(f"{value.get('pair', 'unknown')}: structural execution failed")
+            continue
+        if any(
+            isinstance(item, (float, np.floating)) and not np.isfinite(item)
+            for item in value.values()
+        ):
+            failures.append(f"{value.get('pair', 'unknown')}: non-finite structure")
+            continue
         pair = value["pair"]
         if not value["forced_rejection_exact_prefix"]: failures.append(f"{pair}: forced rejection is not exact")
         if value["stage_delta_row_sum_max_abs"] > config.audit.row_tolerance: failures.append(f"{pair}: row constraint")
@@ -219,29 +266,74 @@ def _atomic_csv(path, rows):
 
 def _atomic_json(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True); temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"); temporary.replace(path)
+    def safe(item):
+        if isinstance(item, dict):
+            return {key: safe(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [safe(child) for child in item]
+        if isinstance(item, (float, np.floating)) and not np.isfinite(item):
+            return "NaN" if np.isnan(item) else ("Infinity" if item > 0 else "-Infinity")
+        return item
+    temporary.write_text(
+        json.dumps(safe(value), indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ); temporary.replace(path)
 
 
-def audit_experiment(model, config, pairs, checkpoint, *, device="cpu", smoke=False, tag="development"):
-    detail, structures = [], []
+def audit_experiment(
+    model, config, pairs, checkpoint, *, device="cpu", smoke=False,
+    tag="development", overwrite=False,
+):
+    detail, structures, data_hashes = [], [], {}
     for name, pair in pairs.items():
-        fields = build_panel(
-            config, pair, stage_config=model.stages[-1].config,
-            split="train" if smoke else "audit", epoch=config.seed,
-            smoke=smoke, audit=True,
-        )
         np2_path = Path(config.paths.maps) / f"map_{name}_conserve_np2.nc"
-        if not np2_path.is_file(): raise FileNotFoundError(f"missing np2 map: {np2_path}")
-        detail.extend(audit_pair(model, pair, fields, load_map_operator(np2_path), config, device=device))
-        structures.append(structural_checks(model, pair, fields.source[:min(2, len(fields.source))], config, device=device))
+        real = []
+        for path in config.paths.real_field_paths(name):
+            record = {"path": str(path), "available": path.is_file()}
+            if path.is_file():
+                record["sha256"] = file_sha256(path)
+            real.append(record)
+        data_hashes[name] = {
+            "edge": file_sha256(config.paths.edge_path(name)),
+            "map": file_sha256(config.paths.map_path(name)),
+            "np2": file_sha256(np2_path) if np2_path.is_file() else None,
+            "real": real,
+        }
+        try:
+            fields = build_panel(
+                config, pair, stage_config=model.stages[-1].config,
+                split="train" if smoke else "audit", epoch=config.seed,
+                smoke=smoke, audit=True,
+            )
+            if not np2_path.is_file():
+                raise FileNotFoundError(f"missing np2 map: {np2_path}")
+            detail.extend(audit_pair(
+                model, pair, fields, load_map_operator(np2_path), config, device=device
+            ))
+            structures.append(structural_checks(
+                model, pair, fields.source[:min(2, len(fields.source))],
+                config, device=device,
+            ))
+        except Exception as error:
+            structures.append({"pair": name, "error": f"{type(error).__name__}: {error}"})
     summary = summarize(detail); promotion = promotion_report(detail, structures, config, list(pairs))
-    base = Path(config.paths.reports) / f"progressive_next_audit_{tag}{'_smoke' if smoke else ''}"
+    base = Path(config.paths.reports) / f"{config.run_name}_audit_{tag}{'_smoke' if smoke else ''}"
     detail_path, summary_path, report_path = (base.with_name(base.name + suffix) for suffix in ("_detail.csv", "_summary.csv", "_report.json"))
+    manifest_path = base.with_name(base.name + "_manifest.json")
+    if not overwrite and any(path.exists() for path in (detail_path, summary_path, report_path, manifest_path)):
+        raise FileExistsError(f"audit output exists for tag {tag!r}; use --overwrite")
     provenance = {"checkpoint": str(checkpoint), "checkpoint_sha256": file_sha256(checkpoint),
                   "config_sha256": file_sha256(config.path) if config.path else None,
                   "pairs": list(pairs), "outputs": {"detail": str(detail_path), "summary": str(summary_path), "report": str(report_path)}}
     report_value = {**provenance, "structures": structures, "promotion": promotion,
-                    "audit_data_sha256": {name: {"edge": file_sha256(config.paths.edge_path(name)),
-                                                   "map": file_sha256(config.paths.map_path(name))} for name in pairs}}
+                    "audit_data_sha256": data_hashes}
     _atomic_csv(detail_path, detail); _atomic_csv(summary_path, summary); _atomic_json(report_path, report_value)
+    _atomic_json(manifest_path, {
+        "format": "remapgnn.audit_outputs", "schema_version": 1,
+        "inputs": {"checkpoint": provenance["checkpoint_sha256"],
+                   "config": provenance["config_sha256"], "data": data_hashes},
+        "outputs": {
+            str(path): file_sha256(path)
+            for path in (detail_path, summary_path, report_path)
+        },
+    })
     return AuditReport(tuple(detail), tuple(summary), tuple(structures), promotion, provenance)

@@ -230,9 +230,10 @@ def cell_average(function, quadrature):
 def harmonic_batch(
     *, source_key, source_quadrature, target_quadrature, degrees,
     modes_per_degree, split, seed, area_src, role, pair_key=None, sample_seed=None,
+    frequency_cells_per_k_squared=6.0,
 ):
     source, truth, frequencies, labels, keys = [], [], [], [], []
-    effective_k = np.sqrt(len(area_src) / 6.0)
+    effective_k = np.sqrt(len(area_src) / float(frequency_cells_per_k_squared))
     normalized_area = np.asarray(area_src, dtype=np.float64)
     normalized_area /= np.maximum(normalized_area.sum(), 1.0e-30)
     for degree_index, degree in enumerate(degrees):
@@ -288,7 +289,12 @@ def balanced_mixtures(batch: FieldBatch, area_src, count, seed, *, role=None):
             truth.append(mixed_truth / rms)
             frequency.append(torch.tensor(level, dtype=batch.frequency.dtype))
             labels.append((-1, -1))
-            keys.append(f"mixture:{seed}:{mixture_index}")
+            components = [
+                (batch.source_keys[int(i)], float(coefficient[j]))
+                for j, i in enumerate(indices.tolist())
+            ]
+            identity = hashlib.sha256(repr(components).encode("utf-8")).hexdigest()[:20]
+            keys.append(f"mixture:{identity}")
             mixture_index += 1
     return FieldBatch(
         torch.stack(source), torch.stack(truth), torch.stack(frequency), labels,
@@ -341,6 +347,11 @@ def concatenate_batches(batches):
         [key for x in batches for key in x.source_keys],
         [family for x in batches for family in (x.families or x.roles)],
         torch.cat(masks),
+        torch.cat([
+            x.shared_anchor if x.shared_anchor is not None
+            else torch.zeros(x.source.shape[0], dtype=torch.bool)
+            for x in batches
+        ]),
     )
 
 
@@ -374,11 +385,13 @@ def real_field_batch(paths, names, n_source, n_target, area_src):
             continue
         source.append(torch.tensor(x / rms, dtype=torch.float32))
         truth.append(torch.tensor(y / rms, dtype=torch.float32))
-        labels.append((-500, index)); keys.append(f"real:{name}")
+        source_grid = source_path.stem.split("_")[-1]
+        labels.append((-500, index)); keys.append(f"{source_grid}:real:{name}")
     if not source:
         return None
     count = len(source)
     return FieldBatch(
         torch.stack(source), torch.stack(truth), torch.full((count,), float("nan")),
-        labels, ["safety"] * count, keys, ["real"] * count, torch.zeros(count, dtype=torch.bool),
+        labels, ["safety"] * count, keys, ["real"] * count,
+        torch.zeros(count, dtype=torch.bool), torch.ones(count, dtype=torch.bool),
     )

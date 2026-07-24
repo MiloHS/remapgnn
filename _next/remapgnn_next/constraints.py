@@ -158,6 +158,7 @@ def project_marginals(
     raw_mass, src_index, tgt_index, area_src, area_tgt, *, iterations=400,
     epsilon_relative=1.0e-9, tolerance=1.0e-12, solve_dtype=torch.float64,
     assert_converged=False, return_info=False,
+    row_tolerance=1.0e-10, column_tolerance=1.0e-10,
 ):
     """Project signed masses onto target and source area marginals."""
     n_src, n_tgt = int(area_src.numel()), int(area_tgt.numel())
@@ -165,8 +166,13 @@ def project_marginals(
     source_area, target_area = area_src.to(solve_dtype), area_tgt.to(solve_dtype)
     mismatch = (target_area.sum() - source_area.sum()).abs()
     scale = 0.5 * (target_area.sum().abs() + source_area.sum().abs()).clamp_min(1.0e-30)
-    if float(mismatch / scale) > 1.0e-6:
-        warnings.warn("source and target total areas differ; both marginals cannot be exact", RuntimeWarning)
+    if not bool(torch.isfinite(q).all()) or not bool(torch.isfinite(source_area).all()) or \
+       not bool(torch.isfinite(target_area).all()):
+        raise ValueError("marginal projection inputs must be finite")
+    if bool((source_area <= 0).any()) or bool((target_area <= 0).any()):
+        raise ValueError("marginal projection areas must be positive")
+    if float(mismatch / scale) > min(float(row_tolerance), float(column_tolerance)):
+        raise ValueError("source and target total areas are incompatible")
     degree_t = index_sum(torch.ones_like(q), tgt_index, n_tgt)
     degree_s = index_sum(torch.ones_like(q), src_index, n_src)
     epsilon = float(epsilon_relative) * 0.5 * (degree_t.mean() + degree_s.mean())
@@ -195,11 +201,16 @@ def project_marginals(
     target_residual = index_sum(mass, tgt_index, n_tgt) - target_area
     row_max, column_max = target_residual.abs().max(), source_residual.abs().max()
     relative = old.sqrt() / initial
-    converged = bool(relative < tolerance)
+    converged = bool(
+        relative < tolerance
+        and row_max <= float(row_tolerance)
+        and column_max <= float(column_tolerance)
+    )
     info = ProjectionInfo(used, converged, relative, row_max, column_max)
     if assert_converged and not converged:
         raise RuntimeError(
-            f"marginal CG did not converge in {used} iterations (relative={float(relative):.3e})"
+            f"marginal projection failed: relative={float(relative):.3e}, "
+            f"row={float(row_max):.3e}, column={float(column_max):.3e}, iterations={used}"
         )
     return (mass, info) if return_info else mass
 
@@ -244,11 +255,13 @@ def project_with_moment_relaxation(
     linear_iterations=1, quadratic_iterations=3,
     linear_ridge=1.0e-4, quadratic_ridge=1.0e-3,
     projection_iterations=400, epsilon_relative=1.0e-12,
+    row_tolerance=1.0e-8, column_tolerance=1.0e-10,
 ):
     kwargs = dict(
         src_index=src_index, tgt_index=tgt_index, area_src=area_src, area_tgt=area_tgt,
         iterations=projection_iterations, epsilon_relative=epsilon_relative,
         solve_dtype=torch.float64,
+        row_tolerance=row_tolerance, column_tolerance=column_tolerance,
     )
     mass = project_marginals(raw_mass, **kwargs)
     nl = int(linear_iterations) if linear_coefficient is not None else 0
@@ -266,4 +279,9 @@ def project_with_moment_relaxation(
             )
             mass = mass + float(quadratic_relax) * (corrected - mass)
             mass = project_marginals(mass, **kwargs)
+    mass, info = project_marginals(
+        mass, **kwargs, assert_converged=True, return_info=True
+    )
+    if not info.converged:
+        raise RuntimeError("final marginal projection did not converge")
     return mass

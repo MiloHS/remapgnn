@@ -1,0 +1,22 @@
+#!/bin/bash -l
+#PBS -N next_train
+#PBS -A e3sm
+#PBS -q gpu
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -o remapgnn_next_train.log
+
+# Trains the next high-band candidate. Update and smoke-test the active _next
+# configuration before submitting this production-length job.
+cd "$PBS_O_WORKDIR"
+module purge
+module load miniforge3/25.3.1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export OMP_NUM_THREADS=8
+set -euo pipefail
+
+read -r -a EXTRA_ARGS <<< "${EXTRA:-}"
+conda run --no-capture-output -n "${REMAPGNN_CONDA_ENV:-remap_gpu}" \
+  ./next train "${EXTRA_ARGS[@]}"

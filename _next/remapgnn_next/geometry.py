@@ -143,9 +143,9 @@ def normalized_feature_tensors(edge_path, feature_spec, normalization):
     target_index = frame["target_index"].to_numpy(dtype=np.int64)
     n_source, n_target = int(source_index.max()) + 1, int(target_index.max()) + 1
 
-    def unique(index, names, size):
-        value = np.zeros((size, len(names)), dtype=np.float32)
-        value[index] = frame[names].to_numpy(dtype=np.float32)
+    def unique(index, names, size, dtype=np.float32):
+        value = np.zeros((size, len(names)), dtype=dtype)
+        value[index] = frame[names].to_numpy(dtype=dtype)
         return value
 
     edge = frame[feature_spec["edge"]].to_numpy(dtype=np.float32)
@@ -156,8 +156,8 @@ def normalized_feature_tensors(edge_path, feature_spec, normalization):
     target = (target - normalization["tgt_mean"]) / normalization["tgt_std"]
     source_xyz = unique(source_index, ["src_x", "src_y", "src_z"], n_source)
     target_xyz = unique(target_index, ["tgt_x", "tgt_y", "tgt_z"], n_target)
-    source_area = unique(source_index, ["src_area"], n_source).reshape(-1)
-    target_area = unique(target_index, ["tgt_area"], n_target).reshape(-1)
+    source_area = unique(source_index, ["src_area"], n_source, np.float64).reshape(-1)
+    target_area = unique(target_index, ["tgt_area"], n_target, np.float64).reshape(-1)
     return {
         "frame": frame,
         "src_index": torch.tensor(source_index, dtype=torch.long),
