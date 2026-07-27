@@ -12,7 +12,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .checkpoint import CLEAN_TRAINING_FORMAT, TRAINING_SCHEMA_VERSION
+from .checkpoint import (
+    BILINEAR_TRAINING_FORMAT, BILINEAR_TRAINING_SCHEMA_VERSION,
+    CLEAN_TRAINING_FORMAT, TRAINING_SCHEMA_VERSION,
+)
 from .evaluation import area_relative_l2, safe_ratio
 from .panels import build_panel
 from .provenance import object_sha256, tensor_state_sha256, verify_run_manifest
@@ -20,6 +23,15 @@ from .provenance import object_sha256, tensor_state_sha256, verify_run_manifest
 
 CHECKPOINT_FORMAT = CLEAN_TRAINING_FORMAT
 CHECKPOINT_SCHEMA = TRAINING_SCHEMA_VERSION
+
+
+def _panel(config, pair, stage, **kwargs):
+    if getattr(config, "schema_version", None) == 5:
+        from .band_panels import build_band_panel
+        return build_band_panel(
+            config, pair, stage_config=stage, **kwargs
+        )
+    return build_panel(config, pair, stage_config=stage, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -169,7 +181,9 @@ def pair_weights(pairs: Mapping[str, object]):
     return {name: 0.5 / len(values) for values in regimes.values() for name in values}
 
 
-def selection_score(metrics, selection, audit):
+def selection_score(
+    metrics, selection, audit, *, stage_index=0, capability=False,
+):
     numeric = [
         item for value in metrics.values() for item in value.values()
         if isinstance(item, (float, np.floating))
@@ -178,16 +192,32 @@ def selection_score(metrics, selection, audit):
         return (float("inf"),) * 5
     target = max(value["target_mean_ratio_vs_prefix"] for value in metrics.values())
     safety = max(value["safety_worst_ratio_vs_prefix"] for value in metrics.values())
-    fv = max(value["safety_worst_ratio_vs_fv"] for value in metrics.values())
+    base = max(value["safety_worst_ratio_vs_fv"] for value in metrics.values())
     prior = max(value["prefix_band_worst_ratio_vs_prefix"] for value in metrics.values())
-    score = target + 5 * max(0, safety - (1 + selection.safety_tolerance)) + \
-        5 * max(0, fv - (1 + audit.maximum_fv_regression)) + \
-        5 * max(0, prior - (1 + selection.prior_band_tolerance))
-    return float(score), float(target), float(safety), float(fv), float(prior)
+    safety_tolerance = (
+        selection.capability_safety_tolerance
+        if capability else selection.safety_tolerance
+    )
+    score = target + 5 * max(0, safety - (1 + safety_tolerance))
+    # At stage zero prefix and base are the same result, and no accepted prior
+    # band exists. Penalizing those aliases again triple-counts one field.
+    if int(stage_index) > 0:
+        score += 5 * max(0, base - (1 + (
+            selection.capability_safety_tolerance
+            if capability else audit.maximum_fv_regression
+        )))
+        score += 5 * max(0, prior - (1 + (
+            selection.capability_safety_tolerance
+            if capability else selection.prior_band_tolerance
+        )))
+    return float(score), float(target), float(safety), float(base), float(prior)
 
 
 @torch.no_grad()
-def evaluate_selection(model, pairs, panels, stage_index, config, gate_mode, device):
+def evaluate_selection(
+    model, pairs, panels, stage_index, config, gate_mode, device,
+    *, capability=False,
+):
     model.eval(); metrics = {}
     for name, host_pair in pairs.items():
         pair, panel = host_pair.to(device), panels[name].to(device)
@@ -208,29 +238,52 @@ def evaluate_selection(model, pairs, panels, stage_index, config, gate_mode, dev
         target = panel.is_target.cpu().numpy(); safety = ~target
         ratio_prefix = safe_ratio(current, prefix, config.audit.zero_error_tolerance)
         ratio_fv = safe_ratio(current, fv, config.audit.zero_error_tolerance)
-        frequency = panel.frequency.cpu().numpy()
-        previous = (
-            model.stages[stage_index - 1].config
-            if stage_index
-            else model.stages[stage_index].config
-        )
-        prior_mask = safety & np.isfinite(frequency) & (frequency > previous.band_lower) & (frequency <= previous.band_upper)
-        if not prior_mask.any(): prior_mask = safety
+        if getattr(config, "schema_version", None) == 5 and panel.bands:
+            previous_names = {
+                stage.config.target_band for stage in model.stages[:stage_index]
+            }
+            prior_mask = safety & np.asarray([
+                band in previous_names for band in panel.bands
+            ])
+        else:
+            frequency = panel.frequency.cpu().numpy()
+            previous = (
+                model.stages[stage_index - 1].config
+                if stage_index
+                else model.stages[stage_index].config
+            )
+            prior_mask = safety & np.isfinite(frequency) & (
+                frequency > previous.band_lower
+            ) & (frequency <= previous.band_upper)
+        if not prior_mask.any():
+            prior_mask = np.zeros_like(safety) if stage_index == 0 else safety
         gates, locals_ = np.asarray(gates), np.asarray(locals_)
+        safety_indices = np.where(safety)[0]
+        worst_safety_index = int(
+            safety_indices[np.argmax(ratio_prefix[safety])]
+        )
         metrics[name] = {
             "target_mean_ratio_vs_prefix": float(ratio_prefix[target].mean()),
             "target_worst_ratio_vs_prefix": float(ratio_prefix[target].max()),
             "target_mean_ratio_vs_fv": float(ratio_fv[target].mean()),
             "safety_worst_ratio_vs_prefix": float(ratio_prefix[safety].max()),
             "safety_worst_ratio_vs_fv": float(ratio_fv[safety].max()),
-            "prefix_band_worst_ratio_vs_prefix": float(ratio_prefix[prior_mask].max()),
+            "prefix_band_worst_ratio_vs_prefix": (
+                1.0 if not prior_mask.any()
+                else float(ratio_prefix[prior_mask].max())
+            ),
+            "worst_safety_source_key": panel.source_keys[worst_safety_index],
+            "worst_safety_family": panel.families[worst_safety_index],
             "target_model_rel": float(current[target].mean()), "target_prefix_rel": float(prefix[target].mean()),
             "target_fv_rel": float(fv[target].mean()), "target_field_gate": float(gates[target].mean()),
             "safety_field_gate": float(gates[safety].mean()), "target_local_gate": float(locals_[target].mean()),
             "safety_local_gate": float(locals_[safety].mean()), "row_residual_max": max(rows),
             "column_residual_max": max(columns),
         }
-    return (*selection_score(metrics, config.selection, config.audit), metrics)
+    return (*selection_score(
+        metrics, config.selection, config.audit,
+        stage_index=stage_index, capability=capability,
+    ), metrics)
 
 
 def _atomic_torch_save(value, path):
@@ -269,8 +322,14 @@ class SequentialTrainer:
     def stage(self): return self.model.stages[self.stage_index]
 
     def _pack(self, state, optimizer, *, phase, epoch, completed, history, smoke):
+        bilinear = getattr(self.config, "schema_version", None) == 5
         pack = {
-            "format": CHECKPOINT_FORMAT, "schema_version": CHECKPOINT_SCHEMA,
+            "format": (
+                BILINEAR_TRAINING_FORMAT if bilinear else CHECKPOINT_FORMAT
+            ),
+            "schema_version": (
+                BILINEAR_TRAINING_SCHEMA_VERSION if bilinear else CHECKPOINT_SCHEMA
+            ),
             "completed": bool(completed), "smoke": bool(smoke), "stage_index": self.stage_index,
             "phase": phase, "epoch": int(epoch), "model_state": cpu_state(self.model),
             "optimizer_state": None if optimizer is None else optimizer.state_dict(),
@@ -297,7 +356,17 @@ class SequentialTrainer:
         return pack
 
     def _validate_resume(self, saved):
-        if saved.get("format") != CHECKPOINT_FORMAT or saved.get("schema_version") != CHECKPOINT_SCHEMA:
+        expected_format = (
+            BILINEAR_TRAINING_FORMAT
+            if getattr(self.config, "schema_version", None) == 5
+            else CHECKPOINT_FORMAT
+        )
+        expected_schema = (
+            BILINEAR_TRAINING_SCHEMA_VERSION
+            if getattr(self.config, "schema_version", None) == 5
+            else CHECKPOINT_SCHEMA
+        )
+        if saved.get("format") != expected_format or saved.get("schema_version") != expected_schema:
             raise ValueError("resume checkpoint has the wrong clean schema")
         if saved["stage_index"] != self.stage_index: raise ValueError("resume stage differs")
         if saved.get("provenance") != self.run_manifest:
@@ -327,8 +396,8 @@ class SequentialTrainer:
         train_pairs = {name: self.train_pairs[name] for name in train_names}
         selection_pairs = {name: (self.train_pairs.get(name) or self.selection_pairs[name]) for name in selection_names}
         weights = pair_weights(train_pairs)
-        selection_panels = {name: build_panel(
-                                self.config, pair, stage_config=self.stage.config,
+        selection_panels = {name: _panel(
+                                self.config, pair, self.stage.config,
                                 split="train" if smoke else "val",
                                 epoch=0, smoke=smoke, audit=True)
                             for name, pair in selection_pairs.items()}
@@ -345,7 +414,8 @@ class SequentialTrainer:
             identity_metrics = copy.deepcopy(saved["identity_selection_metrics"])
         else:
             identity_score, *_, identity_metrics = evaluate_selection(
-                self.model, selection_pairs, selection_panels, self.stage_index, self.config, "forced_closed", self.device
+                self.model, selection_pairs, selection_panels, self.stage_index,
+                self.config, "forced_closed", self.device, capability=True,
             )
         history = list(saved.get("history", [])) if saved else [{"phase": "identity", "epoch": 0, "selection_score": identity_score}]
         state = {
@@ -377,8 +447,8 @@ class SequentialTrainer:
                 for pair_index, (name, pair) in enumerate(train_pairs.items()):
                     panel_epoch = epoch + 1000 * pair_index
                     if phase == "router": panel_epoch += 10000
-                    panel = build_panel(
-                        self.config, pair, stage_config=self.stage.config,
+                    panel = _panel(
+                        self.config, pair, self.stage.config,
                         split="train", epoch=panel_epoch, smoke=smoke,
                     )
                     panel = panel.to(self.device); panels[name] = panel
@@ -426,19 +496,51 @@ class SequentialTrainer:
                     selection_result = evaluate_selection(self.model, selection_pairs, selection_panels,
                                                           self.stage_index, self.config,
                                                           gate_mode if phase == "capability" else self.stage.config.deployment_gate_mode,
-                                                          self.device)
+                                                          self.device,
+                                                          capability=phase == "capability")
                     score, *_, metrics = selection_result
                     key = "capability" if phase == "capability" else "final"
                     if score < state[f"{key}_score"]:
                         state[f"{key}_score"] = score; state[f"{key}_epoch"] = epoch
                         state[f"{key}_state"] = cpu_state(self.model); state["metrics"] = metrics
-                row = {"phase": phase, "stage": phase, "epoch": epoch,
+                bilinear_run = getattr(self.config, "schema_version", None) == 5
+                row = {"phase": phase,
+                       "stage": self.stage.name if bilinear_run else phase,
+                       "epoch": epoch,
                        "target_rel": float(np.mean([value["target_rel"] for value in logs])),
                        "prefix_target_rel": float(np.mean([value["prefix_target_rel"] for value in logs])),
                        "safety_worst_prefix_ratio": float(np.max([value["safety_worst_prefix_ratio"] for value in logs])),
-                       "safety_worst_fv_ratio": float(np.max([value["safety_worst_fv_ratio"] for value in logs])),
                        "selection_score": "" if selection_result is None else selection_result[0],
                        "seconds": time.time() - started}
+                row[
+                    "safety_worst_base_ratio"
+                    if bilinear_run else "safety_worst_fv_ratio"
+                ] = float(np.max([
+                    value["safety_worst_fv_ratio"] for value in logs
+                ]))
+                if selection_result is not None:
+                    _, target_ratio, safety_ratio, base_ratio, prior_ratio, metrics = (
+                        selection_result
+                    )
+                    worst_pair = max(
+                        metrics,
+                        key=lambda name: metrics[name][
+                            "safety_worst_ratio_vs_prefix"
+                        ],
+                    )
+                    row.update(
+                        selection_target_ratio=target_ratio,
+                        selection_safety_prefix_ratio=safety_ratio,
+                        selection_safety_base_ratio=base_ratio,
+                        selection_prior_band_ratio=prior_ratio,
+                        selection_worst_pair=worst_pair,
+                        selection_worst_source_key=metrics[worst_pair][
+                            "worst_safety_source_key"
+                        ],
+                        selection_worst_family=metrics[worst_pair][
+                            "worst_safety_family"
+                        ],
+                    )
                 if phase == "router":
                     row.update(target_field_probability=float(np.mean([v["target_field_probability"] for v in logs])),
                                safety_field_probability=float(np.mean([v["safety_field_probability"] for v in logs])))
@@ -479,7 +581,13 @@ class SequentialTrainer:
                 if initial[0] < state["final_score"]:
                     state["final_score"] = initial[0]; state["final_epoch"] = 0
                     state["final_state"] = cpu_state(self.model); state["metrics"] = initial[-1]
-                history.append({"phase": "router", "stage": "router", "epoch": 0,
+                history.append({"phase": "router",
+                                "stage": (
+                                    self.stage.name
+                                    if getattr(self.config, "schema_version", None) == 5
+                                    else "router"
+                                ),
+                                "epoch": 0,
                                 "selection_score": initial[0], "candidate": "initial_hard_router"})
             phase_run("router", router_epochs, self.config.phases.router_learning_rate,
                       int(saved["epoch"]) + 1 if saved_phase == "router" else 1,

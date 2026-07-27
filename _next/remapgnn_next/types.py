@@ -132,6 +132,8 @@ class PairData:
     fv_quad_src: torch.Tensor | None = None
     fv_quad_tgt: torch.Tensor | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    base_operator: SparseOperator | None = None
+    correction_reference: torch.Tensor | None = None
 
     def __post_init__(self):
         if self.edge_features.dtype != torch.float32:
@@ -139,6 +141,16 @@ class PairData:
         for name in ("src_xyz", "tgt_xyz", "src_neighbor_weight", "tgt_neighbor_weight"):
             if getattr(self, name).dtype != torch.float32:
                 raise TypeError(f"PairData.{name} must be float32")
+        if self.base_operator is not None and (
+            self.base_operator.n_src != self.fv_operator.n_src
+            or self.base_operator.n_tgt != self.fv_operator.n_tgt
+        ):
+            raise ValueError("base and correction operators must have matching dimensions")
+        if self.correction_reference is not None:
+            if tuple(self.correction_reference.shape) != (self.fv_operator.n_edges,):
+                raise ValueError("correction reference must match the correction graph")
+            if bool((self.correction_reference < 0).any()):
+                raise ValueError("correction reference must be nonnegative")
 
     @property
     def src_index(self):
@@ -155,6 +167,10 @@ class PairData:
     @property
     def area_tgt(self):
         return self.fv_operator.area_tgt
+
+    @property
+    def baseline_operator(self):
+        return self.base_operator or self.fv_operator
 
     @property
     def n_src(self):
@@ -174,7 +190,15 @@ class PairData:
         values = {name: _moved(getattr(self, name), device) for name in names}
         return PairData(
             pair=self.pair, fv_operator=self.fv_operator.to(device),
-            metadata=dict(self.metadata), **values,
+            metadata=dict(self.metadata),
+            base_operator=(
+                None if self.base_operator is None else self.base_operator.to(device)
+            ),
+            correction_reference=(
+                None if self.correction_reference is None
+                else self.correction_reference.to(device)
+            ),
+            **values,
         )
 
 
@@ -189,6 +213,8 @@ class FieldBatch:
     families: Sequence[str] = ()
     target_mask: torch.Tensor | None = None
     shared_anchor: torch.Tensor | None = None
+    degrees: torch.Tensor | None = None
+    bands: Sequence[str] = ()
 
     def __post_init__(self):
         n = int(self.source.shape[0])
@@ -208,6 +234,11 @@ class FieldBatch:
         if self.shared_anchor is not None:
             if self.shared_anchor.dtype != torch.bool or tuple(self.shared_anchor.shape) != (n,):
                 raise ValueError("shared_anchor must be boolean with one entry per field")
+        if self.degrees is not None:
+            if self.degrees.dtype != torch.long or tuple(self.degrees.shape) != (n,):
+                raise ValueError("degrees must be int64 with one entry per field")
+        if self.bands and len(self.bands) != n:
+            raise ValueError("bands must be empty or match the field count")
 
     @property
     def is_target(self):
@@ -221,6 +252,8 @@ class FieldBatch:
             list(self.labels), list(self.roles), list(self.source_keys), list(self.families),
             None if self.target_mask is None else self.target_mask.to(device),
             None if self.shared_anchor is None else self.shared_anchor.to(device),
+            None if self.degrees is None else self.degrees.to(device),
+            list(self.bands),
         )
 
     def subset(self, indices) -> "FieldBatch":
@@ -233,6 +266,8 @@ class FieldBatch:
             [self.families[i] for i in host] if self.families else [],
             None if self.target_mask is None else self.target_mask[index],
             None if self.shared_anchor is None else self.shared_anchor[index],
+            None if self.degrees is None else self.degrees[index],
+            [self.bands[i] for i in host] if self.bands else [],
         )
 
 
@@ -259,6 +294,11 @@ class ProgressiveDiagnostics:
     @property
     def output(self) -> torch.Tensor:
         return self.stage_outputs[-1] if self.stage_outputs else self.fv_output
+
+    @property
+    def base_output(self) -> torch.Tensor:
+        """Baseline output; ``fv_output`` remains as a schema-4 compatibility name."""
+        return self.fv_output
 
     @property
     def gates(self) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:

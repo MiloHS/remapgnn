@@ -163,9 +163,13 @@ class ConservativeCorrectionStage(nn.Module):
         source_state, mean, scale = area_centered_normalize(raw_source, pair.area_src)
         prefix_state = (prefix_output - mean) / scale
         fv_state = (fv_output - mean) / scale
-        reference = row_normalized_reference(
-            pair.fv_operator.weight.to(raw_source.dtype), pair.tgt_index,
-            pair.n_tgt, self.config.reference_floor,
+        reference = (
+            pair.correction_reference.to(raw_source.dtype)
+            if pair.correction_reference is not None
+            else row_normalized_reference(
+                pair.fv_operator.weight.to(raw_source.dtype), pair.tgt_index,
+                pair.n_tgt, self.config.reference_floor,
+            )
         )
         field_gate, local_gate, field_probability, local_probability = self._router_values(
             pair, source_state, prefix_state, reference, gate_mode
@@ -301,13 +305,17 @@ class ProgressiveRemapper(nn.Module):
             stage.set_training_phase(phase if position == index else "frozen")
 
     def forward(self, pair: PairData, source_field, *, gate_modes=None, return_diagnostics=True):
-        operator = self.base_operator or pair.fv_operator
+        operator = self.base_operator or pair.baseline_operator
         if operator.n_src != pair.n_src or operator.n_tgt != pair.n_tgt:
             raise ValueError("base operator dimensions do not match pair")
         source = source_field.unsqueeze(0) if source_field.ndim == 1 else source_field
         if operator.weight.device != source.device:
             operator = operator.to(source.device)
-        fv_output = apply_operator(operator, source)
+        if pair.metadata.get("baseline_kind") == "conservative_esmf_bilinear":
+            from .bilinear import apply_conservative_bilinear
+            fv_output, _, _ = apply_conservative_bilinear(pair, source)
+        else:
+            fv_output = apply_operator(operator, source)
         current = fv_output
         diagnostics = []
         if gate_modes is None:

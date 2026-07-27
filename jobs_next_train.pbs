@@ -7,8 +7,7 @@
 #PBS -j oe
 #PBS -o remapgnn_next_train.log
 
-# Trains the next high-band candidate. Update and smoke-test the active _next
-# configuration before submitting this production-length job.
+# Trains one configured FV or categorical bilinear correction stage.
 cd "$PBS_O_WORKDIR"
 module purge
 module load miniforge3/25.3.1

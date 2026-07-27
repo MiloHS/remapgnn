@@ -56,7 +56,7 @@ def _fan_area(vertices, valid_counts):
     return area
 
 
-def load_grid_corners(map_path, side):
+def load_grid_corners(map_path, side, expected_area=None):
     import xarray as xr
     with xr.open_dataset(map_path) as dataset:
         longitude = dataset[f"xv_{side}"].values.astype(np.float64)
@@ -65,6 +65,13 @@ def load_grid_corners(map_path, side):
         centers = longitude_latitude_to_xyz(
             dataset[f"xc_{side}"].values, dataset[f"yc_{side}"].values
         )
+    if expected_area is not None:
+        expected_area = np.asarray(expected_area, dtype=np.float64)
+        if expected_area.shape != area.shape:
+            raise ValueError("expected grid areas do not match map dimensions")
+        if not np.isfinite(expected_area).all() or np.any(expected_area <= 0):
+            raise ValueError("expected grid areas must be finite and positive")
+        area = expected_area
     vertices = longitude_latitude_to_xyz(longitude, latitude)
     is_zero = (np.abs(longitude) <= 1.0e-12) & (np.abs(latitude) <= 1.0e-12)
     trailing = np.cumprod(is_zero[:, ::-1].astype(np.int64), axis=1)
@@ -126,8 +133,12 @@ def build_grid_quadrature(vertices, valid_counts, resolution=8):
     }
 
 
-def grid_quadrature(map_path, side, resolution=8, expected_centers=None):
-    vertices, valid, area, centers = load_grid_corners(map_path, side)
+def grid_quadrature(
+    map_path, side, resolution=8, expected_centers=None, expected_area=None
+):
+    vertices, valid, area, centers = load_grid_corners(
+        map_path, side, expected_area=expected_area
+    )
     if expected_centers is not None:
         error = float(np.abs(centers - np.asarray(expected_centers)).max())
         if error > 1.0e-6:
@@ -339,6 +350,7 @@ def concatenate_batches(batches):
     if not batches:
         raise ValueError("cannot concatenate an empty field panel")
     masks = [x.is_target for x in batches]
+    include_band_metadata = any(x.degrees is not None or x.bands for x in batches)
     return FieldBatch(
         torch.cat([x.source for x in batches]), torch.cat([x.truth for x in batches]),
         torch.cat([x.frequency for x in batches]),
@@ -352,6 +364,25 @@ def concatenate_batches(batches):
             else torch.zeros(x.source.shape[0], dtype=torch.bool)
             for x in batches
         ]),
+        (
+            torch.cat([
+                x.degrees if x.degrees is not None
+                else torch.full((x.source.shape[0],), -1, dtype=torch.long)
+                for x in batches
+            ])
+            if include_band_metadata else None
+        ),
+        (
+            [
+                band
+                for x in batches
+                for band in (
+                    x.bands if x.bands
+                    else ["unbanded"] * x.source.shape[0]
+                )
+            ]
+            if include_band_metadata else []
+        ),
     )
 
 

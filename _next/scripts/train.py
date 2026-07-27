@@ -24,11 +24,16 @@ def main():
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--stage", help="stage name; must match model.train_stage")
     parser.add_argument("--checkpoint", help="initial clean progressive conversion")
+    parser.add_argument("--source-audit")
+    parser.add_argument("--all-stages", action="store_true")
     parser.add_argument("--output", help="training checkpoint destination")
     parser.add_argument("--history", help="history CSV destination")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if config.schema_version == 5:
+        from train_bilinear import main as bilinear_main
+        return bilinear_main()
     source = Path(args.checkpoint or config.model.source_checkpoint)
     output = Path(args.output or config.paths.checkpoint_path)
     history = Path(args.history) if args.history else (

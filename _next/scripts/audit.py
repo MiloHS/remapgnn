@@ -41,6 +41,9 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if config.schema_version == 5:
+        from audit_bilinear import main as bilinear_main
+        return bilinear_main()
     checkpoint = Path(args.checkpoint)
     print(
         f"AUDIT_INPUT config={Path(args.config).resolve()} "

@@ -57,6 +57,8 @@ Usage:
   ./next audit [audit options]
   ./next audit-candidate [audit options]
   ./next audit-protected [audit options]
+  ./next compare list|run [comparison options]
+  ./next baseline-check [baseline options]
   ./next build-fv PAIR OUTPUT [build options]
 
 Common examples:
@@ -113,6 +115,12 @@ case "$command_name" in
     exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/audit.py" \
       --config "$CONFIG" --device cuda --checkpoint "$PRODUCTION" \
       --manifest "$PRODUCTION_MANIFEST" --require-production --allow-protected "$@"
+    ;;
+  compare)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/compare.py" "$@"
+    ;;
+  baseline-check)
+    exec "$PYTHON_BIN" -B -u "$ROOT_DIR/_next/scripts/check_bilinear.py" "$@"
     ;;
   build-fv)
     if [[ $# -lt 2 ]]; then

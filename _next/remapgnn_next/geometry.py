@@ -238,7 +238,11 @@ def intrinsic_geometry_features(pair, reference, epsilon=1.0e-8):
                 (area_src[source_index] / area_tgt[target_index])
                 .clamp_min(1.0e-20)
             ),
-            pair.fv_operator.weight.to(pair.edge_features.dtype),
+            (
+                pair.correction_reference.to(pair.edge_features.dtype)
+                if pair.correction_reference is not None
+                else pair.fv_operator.weight.to(pair.edge_features.dtype)
+            ),
             first_dot / trace.sqrt()[target_index],
             first_norm[target_index] / trace.sqrt()[target_index],
             second_edge / (radius_squared * trace[target_index]),

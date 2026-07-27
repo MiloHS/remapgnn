@@ -1,8 +1,13 @@
+import pytest
 import torch
 
-from remapgnn_next.config import StageConfig
+from remapgnn_next.config import AuditConfig, StageConfig
+from remapgnn_next.bilinear_config import BilinearSelectionConfig
 from remapgnn_next.progressive import ConservativeCorrectionStage, ProgressiveRemapper
-from remapgnn_next.training import assert_unchanged, identity_floor_selection, parameter_snapshot
+from remapgnn_next.training import (
+    assert_unchanged, identity_floor_selection, parameter_snapshot,
+    selection_score,
+)
 
 
 def test_phase_freezing_across_optimizer_step(synthetic_pair):
@@ -32,6 +37,32 @@ def test_identity_floor_and_phase_transition():
     stage.set_training_phase("router")
     assert not any(p.requires_grad for p in stage.corrector_parameters())
     assert all(p.requires_grad for p in stage.router_parameters())
+
+
+def test_stage_aware_selection_does_not_triple_count_first_stage_safety():
+    metrics = {
+        "pair": {
+            "target_mean_ratio_vs_prefix": 0.95,
+            "safety_worst_ratio_vs_prefix": 1.08,
+            "safety_worst_ratio_vs_fv": 1.08,
+            "prefix_band_worst_ratio_vs_prefix": 1.08,
+        }
+    }
+    selection, audit = BilinearSelectionConfig(), AuditConfig()
+    strict = selection_score(
+        metrics, selection, audit, stage_index=0, capability=False
+    )
+    capability = selection_score(
+        metrics, selection, audit, stage_index=0, capability=True
+    )
+    later = selection_score(
+        metrics, selection, audit, stage_index=1, capability=False
+    )
+    assert strict[0] == pytest.approx(0.95 + 5 * 0.06)
+    assert capability[0] == pytest.approx(0.95)
+    assert later[0] == pytest.approx(
+        0.95 + 5 * 0.06 + 5 * 0.06 + 5 * 0.07
+    )
 
 
 def test_runtime_import_boundary():

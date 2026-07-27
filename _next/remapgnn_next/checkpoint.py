@@ -14,8 +14,10 @@ from .provenance import file_sha256, object_sha256, tensor_state_sha256, verify_
 CLEAN_FV_FORMAT = "remapgnn.clean_fv"
 CLEAN_PROGRESSIVE_FORMAT = "remapgnn.clean_progressive"
 CLEAN_TRAINING_FORMAT = "remapgnn.clean_training"
+BILINEAR_TRAINING_FORMAT = "remapgnn.bilinear_training"
 PROGRESSIVE_SCHEMA_VERSION = 1
 TRAINING_SCHEMA_VERSION = 4
+BILINEAR_TRAINING_SCHEMA_VERSION = 1
 
 STRUCTURAL_STAGE_FIELDS = (
     "edge_dim",
@@ -232,6 +234,49 @@ def load_training_checkpoint(path_or_pack, *, require_completed=True):
         raise ValueError("training source checkpoint hash mismatch")
     progressive_pack = _validated_progressive_pack(source_path, require_production=False)
     return model, progressive_pack, source_path
+
+
+def load_bilinear_training_checkpoint(path_or_pack, *, require_completed=True):
+    from .bilinear_config import BilinearStageConfig
+
+    pack = (
+        torch_load(path_or_pack)
+        if isinstance(path_or_pack, (str, Path))
+        else path_or_pack
+    )
+    if (
+        pack.get("format") != BILINEAR_TRAINING_FORMAT
+        or pack.get("schema_version") != BILINEAR_TRAINING_SCHEMA_VERSION
+    ):
+        raise ValueError("not a supported bilinear training checkpoint")
+    if require_completed and not pack.get("completed", False):
+        raise ValueError("bilinear training checkpoint is incomplete")
+    verify_run_manifest(pack.get("provenance", {}))
+    required_hashes = {
+        "model_state", "optimizer_state", "identity_model_state",
+        "capability_best_state", "best_model_state",
+    }
+    if set(pack.get("state_sha256", {})) != required_hashes:
+        raise ValueError("bilinear checkpoint has incomplete state hashes")
+    for name, expected in pack["state_sha256"].items():
+        if object_sha256(pack.get(name)) != expected:
+            raise ValueError(f"bilinear checkpoint state hash mismatch: {name}")
+    configs = [
+        BilinearStageConfig.from_dict(value)
+        for value in pack["model_stage_configs"]
+    ]
+    model = ProgressiveRemapper(
+        None, [ConservativeCorrectionStage(value) for value in configs]
+    )
+    state = (
+        pack["identity_model_state"]
+        if pack.get("selected_identity", False)
+        else pack["best_model_state"]
+    )
+    model.load_state_dict(state, strict=True)
+    for stage in model.stages:
+        stage.set_training_phase("frozen")
+    return model, pack
 
 
 def validate_fv_reference(progressive_pack: Mapping, fv_path, actual_sha256):

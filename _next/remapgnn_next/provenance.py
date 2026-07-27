@@ -28,7 +28,7 @@ def tensor_state_sha256(state: Mapping[str, torch.Tensor]) -> str:
         digest.update(name.encode("utf-8") + b"\0")
         digest.update(str(tensor.dtype).encode("ascii") + b"\0")
         digest.update(str(tuple(tensor.shape)).encode("ascii") + b"\0")
-        digest.update(tensor.view(torch.uint8).numpy().tobytes())
+        digest.update(tensor.numpy().tobytes())
     return digest.hexdigest()
 
 
@@ -46,7 +46,7 @@ def object_sha256(value) -> str:
             tensor = item.detach().cpu().contiguous()
             digest.update(b"tensor\0" + str(tensor.dtype).encode() + b"\0")
             digest.update(str(tuple(tensor.shape)).encode() + b"\0")
-            digest.update(tensor.view(torch.uint8).numpy().tobytes())
+            digest.update(tensor.numpy().tobytes())
         elif isinstance(item, Mapping):
             digest.update(b"mapping\0")
             for name in sorted(item, key=str):
@@ -122,7 +122,91 @@ def build_run_manifest(config, source_checkpoint, *, pair_names, smoke):
     }
 
 
+def build_bilinear_run_manifest(
+    config, *, pair_names, stage, normalization,
+    source_checkpoint=None, source_audit=None, smoke=False,
+):
+    package = Path(__file__).parent
+    root = package.parents[1]
+    implementation = {
+        str(path.resolve()): file_sha256(path)
+        for path in sorted(package.glob("*.py"))
+    }
+    for relative in (
+        "_next/scripts/train_bilinear.py", "_next/scripts/audit.py",
+        "_next/scripts/audit_bilinear.py",
+        "next", "jobs_next_train.pbs", "jobs_next_audit.pbs",
+    ):
+        path = (root / relative).resolve()
+        if path.is_file():
+            implementation[str(path)] = file_sha256(path)
+    data = {}
+    for pair in pair_names:
+        real = []
+        available_variables = []
+        for path in config.paths.real_field_paths(pair):
+            record = {"path": str(path), "available": path.is_file()}
+            if path.is_file():
+                record["sha256"] = file_sha256(path)
+                import xarray as xr
+                with xr.open_dataset(path) as dataset:
+                    record["variables"] = sorted(
+                        name for name in config.panel.real_fields if name in dataset
+                    )
+                available_variables.append(set(record["variables"]))
+            real.append(record)
+        data[pair] = {
+            "edge": _file_record(config.paths.edge_path(pair)),
+            "bilinear_map": _file_record(config.paths.bilinear_map_path(pair)),
+            "real": real,
+            "included_real_fields": (
+                sorted(set.intersection(*available_variables))
+                if len(available_variables) == 2 else []
+            ),
+        }
+    return {
+        "format": "remapgnn.bilinear_run_manifest",
+        "schema_version": 1,
+        "config": config.to_dict(),
+        "config_sha256": canonical_json_sha256(config.to_dict()),
+        "config_file": _file_record(config.path) if config.path else None,
+        "implementation_sha256": implementation,
+        "data": data,
+        "stage": str(stage),
+        "edge_normalization": normalization,
+        "source_checkpoint": (
+            None if source_checkpoint is None else _file_record(source_checkpoint)
+        ),
+        "source_audit": (
+            None if source_audit is None else _file_record(source_audit)
+        ),
+        "smoke": bool(smoke),
+        "environment": {
+            "python": sys.version, "platform": platform.platform(),
+            "torch": torch.__version__, "cuda": torch.version.cuda,
+        },
+    }
+
+
 def verify_run_manifest(manifest):
+    if (
+        manifest.get("format") == "remapgnn.bilinear_run_manifest"
+        and manifest.get("schema_version") == 1
+    ):
+        records = []
+        for name in ("config_file", "source_checkpoint", "source_audit"):
+            if manifest.get(name):
+                records.append(manifest[name])
+        for item in manifest["data"].values():
+            records.extend((item["edge"], item["bilinear_map"]))
+            records.extend(x for x in item["real"] if x.get("available"))
+        for record in records:
+            if file_sha256(record["path"]) != record["sha256"]:
+                raise ValueError(f"authenticated input changed: {record['path']}")
+        for path, expected in manifest["implementation_sha256"].items():
+            if file_sha256(path) != expected:
+                raise ValueError(f"implementation changed: {path}")
+        return
     if manifest.get("format") != "remapgnn.run_manifest" or manifest.get("schema_version") != 1:
         raise ValueError("invalid run manifest")
     records = [manifest["source_checkpoint"], manifest["source_manifest"],

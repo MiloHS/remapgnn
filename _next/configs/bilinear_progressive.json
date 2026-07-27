@@ -1,0 +1,118 @@
+{
+  "schema_version": 5,
+  "run_name": "bilinear_progressive_v1",
+  "seed": 2407,
+  "pair_roles": {
+    "train": [
+      "CS-r32_to_ICOD-r32",
+      "ICOD-r32_to_CS-r32",
+      "CS-r32_to_RLL-r90-180",
+      "RLL-r90-180_to_CS-r32",
+      "ICOD-r32_to_RLL-r90-180"
+    ],
+    "selection": ["CS-r64_to_ICOD-r64", "ICO-r32_to_CS-r32"],
+    "protected": ["CS-r32_to_HP-n32", "ICOD-r32_to_HP-n32"],
+    "external_resolution": [
+      "CS-r128_to_ICOD-r128",
+      "ICOD-r128_to_CS-r128"
+    ]
+  },
+  "paths": {
+    "analysis": "analysis_medium_improv",
+    "maps": "maps_medium_improv",
+    "models": "_next/checkpoints",
+    "reports": "_next/reports",
+    "real_fields": "data/MIRA-Datasets",
+    "graph_suffix": "kdist_a3p0_mink8",
+    "output_checkpoint": "bilinear_progressive.pt",
+    "history": "bilinear_progressive_history.csv"
+  },
+  "features": {
+    "edge": [
+      "area_ratio_tgt_over_src",
+      "log_area_ratio_tgt_over_src",
+      "knn_rank_over_target_count",
+      "target_candidate_count_log",
+      "source_candidate_count_log",
+      "tan_dist_over_h_src",
+      "tan_dist_over_h_tgt",
+      "tan_dist_over_h_mean"
+    ]
+  },
+  "baseline": {
+    "kind": "conservative_esmf_bilinear",
+    "conservation": "global_constant"
+  },
+  "benchmarks": {
+    "fv_checkpoint": "_next/checkpoints/fv_relax1.pt",
+    "fv_progressive_checkpoint": "_next/checkpoints/progressive.pt",
+    "np2_suffix": "conserve_np2"
+  },
+  "bands": [
+    {"name": "low", "degree_min": 1, "degree_max": 16, "trainable": true},
+    {"name": "mid", "degree_min": 17, "degree_max": 32, "trainable": true},
+    {"name": "high", "degree_min": 33, "degree_max": 48, "trainable": true},
+    {"name": "very_high_guard", "degree_min": 49, "degree_max": 64, "trainable": false}
+  ],
+  "stages": [
+    {"name": "low", "target_band": "low", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
+    {"name": "mid", "target_band": "mid", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
+    {"name": "high", "target_band": "high", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.2, "projection_iterations": 200}
+  ],
+  "panel": {
+    "quadrature_resolution": 8,
+    "smoother_neighbors": 9,
+    "max_degrees_per_epoch": 4,
+    "modes_per_degree": 6,
+    "target_mixtures": 16,
+    "guard_mixtures": 16,
+    "cross_target_mixtures": 12,
+    "cross_guard_mixtures": 12,
+    "cross_target_fractions": [0.25, 0.5, 0.75],
+    "boundary_guard_width": 4,
+    "audit_max_degrees": 5,
+    "audit_modes_per_degree": 8,
+    "audit_mixture_multiplier": 2,
+    "real_fields": ["AnalyticalFun1", "AnalyticalFun2", "TotalPrecipWater", "CloudFraction", "Topography"]
+  },
+  "phases": {
+    "capability_epochs": 60,
+    "capability_learning_rate": 0.0002,
+    "router_epochs": 24,
+    "router_learning_rate": 0.0003,
+    "weight_decay": 0.00001,
+    "gradient_clip": 1.0,
+    "target_batch": 2,
+    "safety_batch": 4,
+    "evaluation_interval": 4
+  },
+  "loss": {
+    "guard_tolerance": 0.005,
+    "fv_guard_tolerance": 0.02,
+    "cvar_fraction": 0.25,
+    "guard_weight": 6.0,
+    "local_weight": 0.5,
+    "gate_teacher_weight": 0.1,
+    "safety_gate_weight": 0.05,
+    "correction_weight": 0.00001,
+    "router_teacher_temperature": 0.1
+  },
+  "selection": {
+    "capability_minimum_improvement": 0.001,
+    "capability_safety_tolerance": 0.1,
+    "final_minimum_gain": 0.02,
+    "safety_tolerance": 0.02,
+    "prior_band_tolerance": 0.01
+  },
+  "audit": {
+    "row_tolerance": 1e-8,
+    "column_tolerance": 1e-10,
+    "minimum_target_gain": 0.03,
+    "maximum_safety_regression": 0.02,
+    "maximum_prior_band_regression": 0.01,
+    "maximum_fv_regression": 0.02,
+    "field_batch": 2,
+    "timing_repeats": 5,
+    "zero_error_tolerance": 1e-14
+  }
+}

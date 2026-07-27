@@ -129,6 +129,9 @@ class PathsConfig:
     def map_path(self, pair):
         return Path(self.maps) / f"map_{pair}_conserve.nc"
 
+    def bilinear_map_path(self, pair):
+        return Path(self.maps) / f"map_{pair}_esmf_bilinear.nc"
+
     def real_field_paths(self, pair):
         source, target = pair.split("_to_", 1)
         def one(grid):
@@ -416,4 +419,8 @@ class ExperimentConfig:
 def load_config(path: str | Path) -> ExperimentConfig:
     path = Path(path)
     with path.open("r", encoding="utf-8") as stream:
-        return ExperimentConfig.from_dict(json.load(stream), path=path)
+        raw = json.load(stream)
+    if int(raw.get("schema_version", -1)) == 5:
+        from .bilinear_config import BilinearExperimentConfig
+        return BilinearExperimentConfig.from_dict(raw, path=path)
+    return ExperimentConfig.from_dict(raw, path=path)
