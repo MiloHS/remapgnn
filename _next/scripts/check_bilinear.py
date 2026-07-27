@@ -41,6 +41,8 @@ def main():
             config.paths.bilinear_map_path(pair_name),
             feature_names=config.features.edge,
             normalization=normalization,
+            correction_reference_kind=config.baseline.correction_reference,
+            bilinear_reference_fraction=config.baseline.bilinear_reference_fraction,
             quadrature_resolution=1,
             smoother_neighbors=2,
         )

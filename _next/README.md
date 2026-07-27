@@ -29,6 +29,9 @@ Thus every prefix preserves constants and conservation. Stage routing can
 return the prefix exactly. The bilinear training bands are literal spherical
 harmonic degrees—low 1–16, mid 17–32, high 33–48—with degrees 49–64 reserved
 as a guard band. No mesh-normalized frequency is used for training decisions.
+The correction reference blends actual ESMF bilinear weights with uniform
+k-distance support. Compact intrinsic geometry replaces redundant raw area,
+distance, and candidate-count features.
 
 Typical FV-line commands:
 

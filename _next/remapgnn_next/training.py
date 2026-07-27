@@ -259,8 +259,12 @@ def evaluate_selection(
             prior_mask = np.zeros_like(safety) if stage_index == 0 else safety
         gates, locals_ = np.asarray(gates), np.asarray(locals_)
         safety_indices = np.where(safety)[0]
+        target_indices = np.where(target)[0]
         worst_safety_index = int(
             safety_indices[np.argmax(ratio_prefix[safety])]
+        )
+        worst_target_index = int(
+            target_indices[np.argmax(ratio_prefix[target])]
         )
         metrics[name] = {
             "target_mean_ratio_vs_prefix": float(ratio_prefix[target].mean()),
@@ -274,6 +278,8 @@ def evaluate_selection(
             ),
             "worst_safety_source_key": panel.source_keys[worst_safety_index],
             "worst_safety_family": panel.families[worst_safety_index],
+            "worst_target_source_key": panel.source_keys[worst_target_index],
+            "worst_target_family": panel.families[worst_target_index],
             "target_model_rel": float(current[target].mean()), "target_prefix_rel": float(prefix[target].mean()),
             "target_fv_rel": float(fv[target].mean()), "target_field_gate": float(gates[target].mean()),
             "safety_field_gate": float(gates[safety].mean()), "target_local_gate": float(locals_[target].mean()),
@@ -528,6 +534,12 @@ class SequentialTrainer:
                             "safety_worst_ratio_vs_prefix"
                         ],
                     )
+                    worst_target_pair = max(
+                        metrics,
+                        key=lambda name: metrics[name][
+                            "target_mean_ratio_vs_prefix"
+                        ],
+                    )
                     row.update(
                         selection_target_ratio=target_ratio,
                         selection_safety_prefix_ratio=safety_ratio,
@@ -540,6 +552,13 @@ class SequentialTrainer:
                         selection_worst_family=metrics[worst_pair][
                             "worst_safety_family"
                         ],
+                        selection_worst_target_pair=worst_target_pair,
+                        selection_worst_target_source_key=metrics[
+                            worst_target_pair
+                        ]["worst_target_source_key"],
+                        selection_worst_target_family=metrics[
+                            worst_target_pair
+                        ]["worst_target_family"],
                     )
                 if phase == "router":
                     row.update(target_field_probability=float(np.mean([v["target_field_probability"] for v in logs])),

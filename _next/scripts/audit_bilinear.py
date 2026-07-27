@@ -85,6 +85,8 @@ def main():
             config.paths.bilinear_map_path(name),
             feature_names=config.features.edge,
             normalization=normalization,
+            correction_reference_kind=config.baseline.correction_reference,
+            bilinear_reference_fraction=config.baseline.bilinear_reference_fraction,
             quadrature_resolution=(
                 2 if args.smoke else config.panel.quadrature_resolution
             ),

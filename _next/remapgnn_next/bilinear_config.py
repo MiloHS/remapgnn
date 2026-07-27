@@ -105,6 +105,7 @@ class BilinearPanelConfig:
     cross_guard_mixtures: int = 12
     cross_target_fractions: tuple[float, ...] = (0.25, 0.5, 0.75)
     boundary_guard_width: int = 4
+    validation_train_pairs: tuple[str, ...] = ()
     audit_max_degrees: int = 5
     audit_modes_per_degree: int = 8
     audit_mixture_multiplier: int = 2
@@ -134,18 +135,31 @@ class BilinearPanelConfig:
             raise ValueError("cross-target fractions must lie strictly between 0 and 1")
         if len(self.real_fields) != len(set(self.real_fields)):
             raise ValueError("panel.real_fields contains duplicates")
+        if len(self.validation_train_pairs) != len(set(self.validation_train_pairs)):
+            raise ValueError("panel.validation_train_pairs contains duplicates")
 
 
 @dataclass(frozen=True)
 class BilinearBaselineConfig:
     kind: str = "conservative_esmf_bilinear"
     conservation: str = "global_constant"
+    correction_reference: str = "blended_bilinear"
+    bilinear_reference_fraction: float = 0.75
 
     def __post_init__(self):
         if self.kind != "conservative_esmf_bilinear":
             raise ValueError("unsupported bilinear baseline kind")
         if self.conservation != "global_constant":
             raise ValueError("unsupported bilinear conservation method")
+        if self.correction_reference not in {"uniform", "blended_bilinear"}:
+            raise ValueError("unsupported correction reference")
+        _finite(
+            "baseline.bilinear_reference_fraction",
+            self.bilinear_reference_fraction,
+            nonnegative=True,
+        )
+        if self.bilinear_reference_fraction > 1:
+            raise ValueError("bilinear reference fraction must be at most one")
 
 
 @dataclass(frozen=True)
@@ -228,6 +242,14 @@ class BilinearExperimentConfig:
                     raise ValueError(f"pair-role leakage: {sorted(overlap)}")
         if any(stage.edge_dim != len(self.features.edge) for stage in self.stages):
             raise ValueError("every stage edge_dim must match configured edge features")
+        unknown_validation = (
+            set(self.panel.validation_train_pairs) - roles["train"]
+        )
+        if unknown_validation:
+            raise ValueError(
+                "panel.validation_train_pairs must be training pairs: "
+                f"{sorted(unknown_validation)}"
+            )
 
     @classmethod
     def from_dict(cls, raw, *, path=None):
@@ -244,7 +266,10 @@ class BilinearExperimentConfig:
         if set(feature_raw) != {"edge"}:
             raise ValueError("bilinear features support only edge")
         panel_raw = dict(data.get("panel", {}))
-        for name in ("cross_target_fractions", "real_fields"):
+        for name in (
+            "cross_target_fractions", "real_fields",
+            "validation_train_pairs",
+        ):
             if name in panel_raw:
                 panel_raw[name] = tuple(panel_raw[name])
         return cls(

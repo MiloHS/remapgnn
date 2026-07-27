@@ -94,6 +94,16 @@ correction on the k-distance graph and projects it to zero target-row sum and
 zero area-weighted source-column sum. Consequently, the baseline and every
 accepted prefix preserve constants and global conservation.
 
+The learned correction uses the existing k-distance graph, which contains
+every ESMF bilinear stencil edge on all active pairs. Its row-normalized
+reference blends 75% of the actual bilinear weights with 25% uniform graph
+support. This exposes the baseline stencil while retaining non-bilinear
+correction edges. The only configured external edge feature is normalized
+neighbor rank; area ratio, distance, and bilinear-reference information are
+already supplied by the intrinsic geometry features. Raw candidate-count
+features are excluded because they identify mesh topology and shifted sharply
+on held-out ICO geometry.
+
 The first experiment uses global degree bands `low=1–16`, `mid=17–32`,
 `high=33–48`, and the untrained guard band `49–64`. Training includes pure
 harmonics, within-band mixtures, target-plus-guard mixtures at 25/50/75%
@@ -102,6 +112,12 @@ available real fields. Mixtures with 25% or 50% target energy are guards;
 75% mixtures are targets. Training also guarantees coverage of the four
 degrees immediately above each stage boundary. No normalized frequency is
 used by this model.
+
+`ICO-r32_to_CS-r32` is a training pair and also contributes a disjoint
+validation-order panel during selection. This tests field generalization on
+the previously missing topology without reusing training harmonic modes.
+`CS-r64_to_ICOD-r64` remains the held-out development mesh pair; protected
+HeALPix and external r128 pairs remain untouched until their audit phases.
 
 Capability selection uses a bounded forced-open safety allowance so a useful
 corrector can reach router training. Final hard-routed selection and auditing

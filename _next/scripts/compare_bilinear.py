@@ -140,6 +140,8 @@ def run(args):
         args.pair, config.paths.edge_path(args.pair),
         config.paths.bilinear_map_path(args.pair),
         feature_names=config.features.edge, normalization=normalization,
+        correction_reference_kind=config.baseline.correction_reference,
+        bilinear_reference_fraction=config.baseline.bilinear_reference_fraction,
         quadrature_resolution=config.panel.quadrature_resolution,
         smoother_neighbors=config.panel.smoother_neighbors,
     )

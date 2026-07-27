@@ -168,6 +168,8 @@ def build_bilinear_pair(
     *,
     feature_names,
     normalization: Mapping,
+    correction_reference_kind="uniform",
+    bilinear_reference_fraction=0.0,
     quadrature_resolution=8,
     smoother_neighbors=9,
     device="cpu",
@@ -184,12 +186,52 @@ def build_bilinear_pair(
         torch.ones(source_index.numel(), dtype=torch.float64),
         target_index, len(area_tgt),
     ).clamp_min(1.0)
-    reference = 1.0 / degree[target_index]
+    uniform_reference = 1.0 / degree[target_index]
+    if correction_reference_kind == "uniform":
+        reference = uniform_reference
+    elif correction_reference_kind == "blended_bilinear":
+        fraction = float(bilinear_reference_fraction)
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("bilinear reference fraction must be in [0,1]")
+        if bool((baseline.weight < 0).any()):
+            raise ValueError("bilinear-aware reference requires nonnegative weights")
+        correction_key = target_index * baseline.n_src + source_index
+        baseline_key = (
+            baseline.tgt_index * baseline.n_src + baseline.src_index
+        )
+        order = torch.argsort(correction_key)
+        locations = torch.searchsorted(correction_key[order], baseline_key)
+        if bool((locations >= correction_key.numel()).any()) or not torch.equal(
+            correction_key[order][locations], baseline_key
+        ):
+            raise ValueError(
+                f"{map_path}: bilinear stencil is not contained in correction graph"
+            )
+        bilinear_reference = torch.zeros_like(uniform_reference)
+        bilinear_reference[order[locations]] = baseline.weight
+        reference = (
+            (1.0 - fraction) * uniform_reference
+            + fraction * bilinear_reference
+        )
+    else:
+        raise ValueError(
+            f"unknown correction reference {correction_reference_kind!r}"
+        )
+    reference_rows = index_sum(reference, target_index, len(area_tgt))
+    if float((reference_rows - 1.0).abs().max()) > 1.0e-12:
+        raise ValueError("correction reference rows do not sum to one")
     correction_graph = SparseOperator.from_weight(
         source_index, target_index, reference,
         torch.tensor(area_src, dtype=torch.float64),
         torch.tensor(area_tgt, dtype=torch.float64),
-        provenance={"kind": "kdist_correction_graph", "path": str(edge_path)},
+        provenance={
+            "kind": "kdist_correction_graph",
+            "path": str(edge_path),
+            "reference": correction_reference_kind,
+            "bilinear_reference_fraction": float(
+                bilinear_reference_fraction
+            ),
+        },
     )
     source_quadrature = grid_quadrature(
         map_path, "a", quadrature_resolution, xyz_src, area_src

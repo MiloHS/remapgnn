@@ -154,7 +154,12 @@ def main():
         if args.smoke else config.pair_roles["train"]
     )
     selection_names = (
-        train_names if args.smoke else list(config.pair_roles["selection"])
+        train_names if args.smoke else list(dict.fromkeys(
+            [
+                *config.pair_roles["selection"],
+                *config.panel.validation_train_pairs,
+            ]
+        ))
     )
     manifest = build_bilinear_run_manifest(
         config,
@@ -174,6 +179,8 @@ def main():
             config.paths.bilinear_map_path(name),
             feature_names=config.features.edge,
             normalization=normalization,
+            correction_reference_kind=config.baseline.correction_reference,
+            bilinear_reference_fraction=config.baseline.bilinear_reference_fraction,
             quadrature_resolution=(
                 2 if args.smoke else config.panel.quadrature_resolution
             ),

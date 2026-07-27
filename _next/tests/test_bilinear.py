@@ -25,6 +25,11 @@ def test_schema5_has_explicit_contiguous_bands():
     ]
     assert [stage.target_band for stage in config.stages] == ["low", "mid", "high"]
     assert "frequency_cells_per_k_squared" not in config.to_dict()["panel"]
+    assert config.features.edge == ("knn_rank_over_target_count",)
+    assert "ICO-r32_to_CS-r32" in config.pair_roles["train"]
+    assert config.panel.validation_train_pairs == ("ICO-r32_to_CS-r32",)
+    assert config.baseline.correction_reference == "blended_bilinear"
+    assert config.baseline.bilinear_reference_fraction == pytest.approx(0.75)
 
 
 def test_rank_one_bilinear_preserves_constants_and_integrals(synthetic_pair):

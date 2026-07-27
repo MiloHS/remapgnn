@@ -8,9 +8,10 @@
       "ICOD-r32_to_CS-r32",
       "CS-r32_to_RLL-r90-180",
       "RLL-r90-180_to_CS-r32",
-      "ICOD-r32_to_RLL-r90-180"
+      "ICOD-r32_to_RLL-r90-180",
+      "ICO-r32_to_CS-r32"
     ],
-    "selection": ["CS-r64_to_ICOD-r64", "ICO-r32_to_CS-r32"],
+    "selection": ["CS-r64_to_ICOD-r64"],
     "protected": ["CS-r32_to_HP-n32", "ICOD-r32_to_HP-n32"],
     "external_resolution": [
       "CS-r128_to_ICOD-r128",
@@ -28,20 +29,13 @@
     "history": "bilinear_progressive_history.csv"
   },
   "features": {
-    "edge": [
-      "area_ratio_tgt_over_src",
-      "log_area_ratio_tgt_over_src",
-      "knn_rank_over_target_count",
-      "target_candidate_count_log",
-      "source_candidate_count_log",
-      "tan_dist_over_h_src",
-      "tan_dist_over_h_tgt",
-      "tan_dist_over_h_mean"
-    ]
+    "edge": ["knn_rank_over_target_count"]
   },
   "baseline": {
     "kind": "conservative_esmf_bilinear",
-    "conservation": "global_constant"
+    "conservation": "global_constant",
+    "correction_reference": "blended_bilinear",
+    "bilinear_reference_fraction": 0.75
   },
   "benchmarks": {
     "fv_checkpoint": "_next/checkpoints/fv_relax1.pt",
@@ -55,9 +49,9 @@
     {"name": "very_high_guard", "degree_min": 49, "degree_max": 64, "trainable": false}
   ],
   "stages": [
-    {"name": "low", "target_band": "low", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
-    {"name": "mid", "target_band": "mid", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
-    {"name": "high", "target_band": "high", "edge_dim": 8, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.2, "projection_iterations": 200}
+    {"name": "low", "target_band": "low", "edge_dim": 1, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
+    {"name": "mid", "target_band": "mid", "edge_dim": 1, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.25, "projection_iterations": 200},
+    {"name": "high", "target_band": "high", "edge_dim": 1, "hidden": 48, "geometry_hidden": 32, "router_hidden": 32, "delta_scale": 0.2, "projection_iterations": 200}
   ],
   "panel": {
     "quadrature_resolution": 8,
@@ -70,6 +64,7 @@
     "cross_guard_mixtures": 12,
     "cross_target_fractions": [0.25, 0.5, 0.75],
     "boundary_guard_width": 4,
+    "validation_train_pairs": ["ICO-r32_to_CS-r32"],
     "audit_max_degrees": 5,
     "audit_modes_per_degree": 8,
     "audit_mixture_multiplier": 2,
