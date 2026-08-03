@@ -36,6 +36,55 @@ def safe_ratio(numerator, denominator, tolerance):
     return float(result) if result.ndim == 0 else result
 
 
+def research_stopping_evidence(pair_metrics, stopping, *, allow_transfer):
+    """Apply the explicit stop/go rule for learned-corrector experiments."""
+    minimum_gain = float(stopping["minimum_mapping_target_gain"])
+    maximum_safety = float(stopping["maximum_mapping_safety_ratio"])
+    mapping_checks = {
+        name: {
+            "target_pass": (
+                value["target_mean_ratio_vs_prefix"] <= 1.0 - minimum_gain
+            ),
+            "safety_pass": (
+                value["safety_worst_ratio_vs_prefix"] <= maximum_safety
+            ),
+            "np2_gap_pass": (
+                value.get("bilinear_to_np2_gap_closed") is not None
+                and value["bilinear_to_np2_gap_closed"]
+                >= float(stopping["minimum_np2_gap_closed"])
+            ),
+        }
+        for name, value in pair_metrics.items()
+    }
+    consistent = bool(mapping_checks) and all(
+        value["target_pass"] and value["safety_pass"]
+        for value in mapping_checks.values()
+    )
+    closes_gap = bool(mapping_checks) and all(
+        value["np2_gap_pass"] for value in mapping_checks.values()
+    )
+    ico_name = stopping["ico_transfer_pair"]
+    ico = pair_metrics.get(ico_name)
+    ico_transfer = bool(
+        allow_transfer and ico
+        and ico["target_mean_ratio_vs_prefix"]
+        <= 1.0 - float(stopping["minimum_ico_transfer_gain"])
+        and ico["safety_worst_ratio_vs_prefix"] <= maximum_safety
+    )
+    proceed = bool(consistent and (closes_gap or ico_transfer))
+    return {
+        "mapping_checks": mapping_checks,
+        "consistent_heldout_admission": consistent,
+        "meaningful_np2_gap_closure": closes_gap,
+        "convincing_ico_transfer": ico_transfer,
+        "proceed_to_full_training": proceed,
+        "conclusion": (
+            "architecture_has_transfer_evidence" if proceed
+            else "useful_corrections_are_mostly_pair_specific"
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class AuditResult:
     names: tuple[str, ...]

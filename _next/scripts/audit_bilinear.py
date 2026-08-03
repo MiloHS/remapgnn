@@ -9,7 +9,9 @@ import numpy as np
 import torch
 
 from remapgnn_next.band_panels import build_band_panel
-from remapgnn_next.bilinear import build_bilinear_pair, apply_conservative_bilinear
+from remapgnn_next.bilinear import (
+    apply_conservative_bilinear, build_bilinear_pair, pair_feature_options,
+)
 from remapgnn_next.checkpoint import load_bilinear_training_checkpoint
 from remapgnn_next.config import load_config
 from remapgnn_next.evaluation import area_relative_l2, load_map_operator, safe_ratio
@@ -79,6 +81,7 @@ def main():
     detail = []
     structures = {}
     final_stage = model.stages[-1]
+    feature_options = pair_feature_options(model.stages)
     for name in names:
         pair = build_bilinear_pair(
             name, config.paths.edge_path(name),
@@ -91,6 +94,7 @@ def main():
                 2 if args.smoke else config.panel.quadrature_resolution
             ),
             smoother_neighbors=config.panel.smoother_neighbors,
+            **feature_options,
         )
         panel = build_band_panel(
             config, pair, stage_config=final_stage.config,

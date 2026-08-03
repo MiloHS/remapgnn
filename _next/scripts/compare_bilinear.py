@@ -12,7 +12,9 @@ import numpy as np
 import torch
 
 from remapgnn_next.band_panels import _harmonics
-from remapgnn_next.bilinear import apply_conservative_bilinear, build_bilinear_pair
+from remapgnn_next.bilinear import (
+    apply_conservative_bilinear, build_bilinear_pair, pair_feature_options,
+)
 from remapgnn_next.checkpoint import load_bilinear_training_checkpoint
 from remapgnn_next.comparison import (
     _analytic, _combine, _from_batch, _harmonic, _metrics, _real,
@@ -144,6 +146,7 @@ def run(args):
         bilinear_reference_fraction=config.baseline.bilinear_reference_fraction,
         quadrature_resolution=config.panel.quadrature_resolution,
         smoother_neighbors=config.panel.smoother_neighbors,
+        **pair_feature_options(model.stages),
     )
     fields = _fields(config, pair, model, args.field, args.band)
     methods = _methods(args.methods, [stage.name for stage in model.stages])

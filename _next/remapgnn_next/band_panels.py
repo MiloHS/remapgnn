@@ -228,6 +228,28 @@ def build_band_panel(
             degrees=boundary_degrees,
         ))
     pieces = [target, *guards]
+    if panel.curriculum_degrees and not audit and not smoke:
+        curriculum_degrees = [
+            int(degree) for degree in panel.curriculum_degrees
+            if target_band.contains(degree)
+        ]
+        if curriculum_degrees:
+            curriculum = _harmonics(
+                config, pair, target_band, split, epoch,
+                2 * max(curriculum_degrees) + 1,
+                len(curriculum_degrees),
+                "target", "curriculum_low_order",
+                degrees=curriculum_degrees,
+            )
+            existing = {
+                key for piece in pieces for key in piece.source_keys
+            }
+            keep = [
+                index for index, key in enumerate(curriculum.source_keys)
+                if key not in existing
+            ]
+            if keep:
+                pieces.append(curriculum.subset(keep))
     target_mix_count = 1 if smoke else panel.target_mixtures * multiplier
     guard_total = 1 if smoke else panel.guard_mixtures * multiplier
     cross_target_count = 1 if smoke else panel.cross_target_mixtures * multiplier

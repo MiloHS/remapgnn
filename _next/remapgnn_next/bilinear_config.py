@@ -49,13 +49,24 @@ class BilinearStageConfig:
     capability_gate_mode: str = "forced_open"
     router_gate_mode: str = "straight_through"
     deployment_gate_mode: str = "hard"
+    feature_layout: str = "magnitude_v1"
+    amplitude_reference: str = "aggregation"
+    amplitude_mode: str = "fixed"
+    minimum_delta_scale: float = 0.0
+    source_context_passes: int = 0
+    alternating_context_passes: int = 0
+    router_scope: str = "global_local"
+    geometry_layout: str = "intrinsic_v1"
+    geometry_feature_set: str = "all"
+    gradient_layout: str = "scalar_v1"
 
     def __post_init__(self):
         if not self.name or not self.target_band:
             raise ValueError("bilinear stage needs a name and target_band")
         for name in (
             "edge_dim", "hidden", "geometry_hidden", "router_hidden",
-            "projection_iterations", "edge_chunk",
+            "projection_iterations", "edge_chunk", "source_context_passes",
+            "alternating_context_passes",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool):
@@ -64,6 +75,33 @@ class BilinearStageConfig:
             raise ValueError(f"{self.name}: network dimensions must be positive")
         if self.projection_iterations <= 0 or self.edge_chunk < 0:
             raise ValueError(f"{self.name}: invalid projection/chunk settings")
+        if self.source_context_passes not in {0, 1}:
+            raise ValueError(f"{self.name}: source_context_passes must be zero or one")
+        if self.alternating_context_passes not in {0, 1}:
+            raise ValueError(
+                f"{self.name}: alternating_context_passes must be zero or one"
+            )
+        if self.feature_layout not in {"magnitude_v1", "directional_v2"}:
+            raise ValueError(f"{self.name}: unknown feature_layout")
+        if self.amplitude_reference not in {"aggregation", "uniform"}:
+            raise ValueError(f"{self.name}: unknown amplitude_reference")
+        if self.amplitude_mode not in {"fixed", "learned_field"}:
+            raise ValueError(f"{self.name}: unknown amplitude_mode")
+        if self.router_scope not in {"global_local", "global"}:
+            raise ValueError(f"{self.name}: unknown router_scope")
+        if self.geometry_layout not in {"intrinsic_v1", "bilinear_v2"}:
+            raise ValueError(f"{self.name}: unknown geometry_layout")
+        if self.geometry_feature_set not in {"all", "transfer"}:
+            raise ValueError(f"{self.name}: unknown geometry_feature_set")
+        if (
+            self.geometry_layout != "bilinear_v2"
+            and self.geometry_feature_set != "all"
+        ):
+            raise ValueError(
+                f"{self.name}: transfer geometry features require bilinear_v2"
+            )
+        if self.gradient_layout not in {"scalar_v1", "covariance_v2"}:
+            raise ValueError(f"{self.name}: unknown gradient_layout")
         for low, high, label in (
             (self.field_gate_low, self.field_gate_high, "field"),
             (self.local_gate_low, self.local_gate_high, "local"),
@@ -79,11 +117,15 @@ class BilinearStageConfig:
         for name in (
             "delta_scale", "reference_floor", "gate_feature_epsilon", "epsilon",
             "projection_row_tolerance", "projection_column_tolerance",
+            "minimum_delta_scale",
         ):
+            nonnegative = name in {"delta_scale", "minimum_delta_scale"}
             _finite(
                 f"{self.name}.{name}", getattr(self, name),
-                positive=name != "delta_scale", nonnegative=name == "delta_scale",
+                positive=not nonnegative, nonnegative=nonnegative,
             )
+        if self.minimum_delta_scale > self.delta_scale:
+            raise ValueError(f"{self.name}: minimum_delta_scale exceeds delta_scale")
 
     @classmethod
     def from_dict(cls, raw):
@@ -113,6 +155,7 @@ class BilinearPanelConfig:
         "AnalyticalFun1", "AnalyticalFun2", "TotalPrecipWater",
         "CloudFraction", "Topography",
     )
+    curriculum_degrees: tuple[int, ...] = ()
 
     def __post_init__(self):
         for name in (
@@ -137,6 +180,11 @@ class BilinearPanelConfig:
             raise ValueError("panel.real_fields contains duplicates")
         if len(self.validation_train_pairs) != len(set(self.validation_train_pairs)):
             raise ValueError("panel.validation_train_pairs contains duplicates")
+        if (
+            len(self.curriculum_degrees) != len(set(self.curriculum_degrees))
+            or any(int(value) < 1 for value in self.curriculum_degrees)
+        ):
+            raise ValueError("panel.curriculum_degrees must be unique positive degrees")
 
 
 @dataclass(frozen=True)
@@ -187,6 +235,15 @@ class BilinearSelectionConfig(SelectionConfig):
 
 
 @dataclass(frozen=True)
+class BilinearLossConfig(LossConfig):
+    low_order_weight: float = 0.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        _finite("loss.low_order_weight", self.low_order_weight, nonnegative=True)
+
+
+@dataclass(frozen=True)
 class BilinearExperimentConfig:
     schema_version: int
     run_name: str
@@ -199,7 +256,7 @@ class BilinearExperimentConfig:
     stages: tuple[BilinearStageConfig, ...]
     panel: BilinearPanelConfig = field(default_factory=BilinearPanelConfig)
     phases: PhaseConfig = field(default_factory=PhaseConfig)
-    loss: LossConfig = field(default_factory=LossConfig)
+    loss: BilinearLossConfig = field(default_factory=BilinearLossConfig)
     selection: BilinearSelectionConfig = field(
         default_factory=BilinearSelectionConfig
     )
@@ -268,7 +325,7 @@ class BilinearExperimentConfig:
         panel_raw = dict(data.get("panel", {}))
         for name in (
             "cross_target_fractions", "real_fields",
-            "validation_train_pairs",
+            "validation_train_pairs", "curriculum_degrees",
         ):
             if name in panel_raw:
                 panel_raw[name] = tuple(panel_raw[name])
@@ -292,7 +349,9 @@ class BilinearExperimentConfig:
             stages=tuple(BilinearStageConfig.from_dict(value) for value in data["stages"]),
             panel=_strict_dataclass(BilinearPanelConfig, panel_raw, "panel"),
             phases=_strict_dataclass(PhaseConfig, dict(data.get("phases", {})), "phases"),
-            loss=_strict_dataclass(LossConfig, dict(data.get("loss", {})), "loss"),
+            loss=_strict_dataclass(
+                BilinearLossConfig, dict(data.get("loss", {})), "loss"
+            ),
             selection=_strict_dataclass(
                 BilinearSelectionConfig,
                 dict(data.get("selection", {})), "selection",

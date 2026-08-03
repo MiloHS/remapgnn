@@ -134,6 +134,8 @@ class PairData:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     base_operator: SparseOperator | None = None
     correction_reference: torch.Tensor | None = None
+    correction_geometry: torch.Tensor | None = None
+    gradient_coefficient: torch.Tensor | None = None
 
     def __post_init__(self):
         if self.edge_features.dtype != torch.float32:
@@ -151,6 +153,20 @@ class PairData:
                 raise ValueError("correction reference must match the correction graph")
             if bool((self.correction_reference < 0).any()):
                 raise ValueError("correction reference must be nonnegative")
+        if self.correction_geometry is not None:
+            if self.correction_geometry.ndim != 2 or (
+                self.correction_geometry.shape[0] != self.fv_operator.n_edges
+            ):
+                raise ValueError("correction geometry must have one row per edge")
+            if self.correction_geometry.dtype != torch.float32:
+                raise TypeError("PairData.correction_geometry must be float32")
+        if self.gradient_coefficient is not None:
+            if tuple(self.gradient_coefficient.shape) != (
+                self.fv_operator.n_edges, 3,
+            ):
+                raise ValueError("gradient coefficient must have shape [edges,3]")
+            if self.gradient_coefficient.dtype != torch.float32:
+                raise TypeError("PairData.gradient_coefficient must be float32")
 
     @property
     def src_index(self):
@@ -186,6 +202,7 @@ class PairData:
             "src_neighbor_weight", "tgt_neighbor_index", "tgt_neighbor_weight",
             "src_node_features", "tgt_node_features", "fv_coord_src",
             "fv_coord_tgt", "fv_quad_src", "fv_quad_tgt",
+            "correction_geometry", "gradient_coefficient",
         )
         values = {name: _moved(getattr(self, name), device) for name in names}
         return PairData(
@@ -283,6 +300,9 @@ class StageDiagnostics:
     field_probability: torch.Tensor
     local_probability: torch.Tensor
     proposal_output: torch.Tensor | None = None
+    correction_scale: torch.Tensor | None = None
+    score_saturation: torch.Tensor | None = None
+    projection_norm_ratio: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)

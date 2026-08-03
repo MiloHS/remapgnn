@@ -236,7 +236,10 @@ def load_training_checkpoint(path_or_pack, *, require_completed=True):
     return model, progressive_pack, source_path
 
 
-def load_bilinear_training_checkpoint(path_or_pack, *, require_completed=True):
+def load_bilinear_training_checkpoint(
+    path_or_pack, *, require_completed=True, allow_analysis=False,
+    allow_implementation_mismatch=False,
+):
     from .bilinear_config import BilinearStageConfig
 
     pack = (
@@ -251,11 +254,22 @@ def load_bilinear_training_checkpoint(path_or_pack, *, require_completed=True):
         raise ValueError("not a supported bilinear training checkpoint")
     if require_completed and not pack.get("completed", False):
         raise ValueError("bilinear training checkpoint is incomplete")
-    verify_run_manifest(pack.get("provenance", {}))
+    if pack.get("analysis_only", False) and not allow_analysis:
+        raise ValueError("analysis-only checkpoint cannot be used as a model prefix")
+    if allow_implementation_mismatch and not allow_analysis:
+        raise ValueError(
+            "implementation mismatch bypass is restricted to analysis"
+        )
+    verify_run_manifest(
+        pack.get("provenance", {}),
+        allow_implementation_mismatch=allow_implementation_mismatch,
+    )
     required_hashes = {
         "model_state", "optimizer_state", "identity_model_state",
         "capability_best_state", "best_model_state",
     }
+    if "router_candidate_state" in pack:
+        required_hashes.add("router_candidate_state")
     if set(pack.get("state_sha256", {})) != required_hashes:
         raise ValueError("bilinear checkpoint has incomplete state hashes")
     for name, expected in pack["state_sha256"].items():

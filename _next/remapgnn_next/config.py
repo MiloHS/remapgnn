@@ -208,15 +208,33 @@ class PhaseConfig:
     target_batch: int = 2
     safety_batch: int = 4
     evaluation_interval: int = 4
+    gradient_diagnostics: bool = False
+    capability_early_stopping_patience: int = 0
+    capability_early_stopping_min_delta: float = 0.0
 
     def __post_init__(self):
         for name in ("capability_epochs", "router_epochs", "target_batch", "safety_batch",
                      "evaluation_interval"):
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"phases.{name} must be positive")
+        if not isinstance(self.gradient_diagnostics, bool):
+            raise ValueError("phases.gradient_diagnostics must be boolean")
+        if (
+            not isinstance(self.capability_early_stopping_patience, int)
+            or isinstance(self.capability_early_stopping_patience, bool)
+            or self.capability_early_stopping_patience < 0
+        ):
+            raise ValueError(
+                "phases.capability_early_stopping_patience must be nonnegative"
+            )
         for name in ("capability_learning_rate", "router_learning_rate", "gradient_clip"):
             _finite(f"phases.{name}", getattr(self, name), positive=True)
         _finite("phases.weight_decay", self.weight_decay, nonnegative=True)
+        _finite(
+            "phases.capability_early_stopping_min_delta",
+            self.capability_early_stopping_min_delta,
+            nonnegative=True,
+        )
 
 
 @dataclass(frozen=True)

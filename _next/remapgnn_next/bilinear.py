@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Fixed ESMF bilinear baseline plus an exact global conservation adjustment."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -9,12 +10,67 @@ import numpy as np
 import torch
 
 from .fields import grid_quadrature
-from .geometry import build_smoother, materialize_geometry_columns
+from .geometry import (
+    build_smoother, enhanced_geometry_features, materialize_geometry_columns,
+)
 from .sparse import apply_operator, index_sum
 from .types import PairData, SparseOperator
 
 
 BASELINE_KIND = "conservative_esmf_bilinear"
+
+
+def pair_feature_options(stages):
+    """Return the static pair features required by an ordered stage list."""
+    configs = [getattr(stage, "config", stage) for stage in stages]
+    return {
+        "geometry_layout": (
+            "bilinear_v2" if any(
+                getattr(value, "geometry_layout", "intrinsic_v1")
+                == "bilinear_v2"
+                for value in configs
+            ) else "intrinsic_v1"
+        ),
+        "gradient_layout": (
+            "covariance_v2" if any(
+                getattr(value, "gradient_layout", "scalar_v1")
+                == "covariance_v2"
+                for value in configs
+            ) else "scalar_v1"
+        ),
+    }
+
+
+def compute_geometry_normalization(
+    pairs: Iterable[PairData], feature_indices=None,
+):
+    """Population statistics for enhanced geometry over training graphs only."""
+    count = 0
+    total = None
+    square = None
+    for pair in pairs:
+        values = pair.correction_geometry
+        if values is None:
+            raise ValueError(f"{pair.pair}: enhanced correction geometry is absent")
+        work = values.to(torch.float64)
+        if feature_indices is not None:
+            work = work[:, tuple(feature_indices)]
+        if not bool(torch.isfinite(work).all()):
+            raise ValueError(f"{pair.pair}: correction geometry is non-finite")
+        if total is None:
+            total = work.sum(0)
+            square = work.square().sum(0)
+        else:
+            total += work.sum(0)
+            square += work.square().sum(0)
+        count += work.shape[0]
+    if count <= 0:
+        raise ValueError("cannot normalize an empty collection of pair geometries")
+    mean = total / count
+    variance = (square / count - mean.square()).clamp_min(0.0)
+    std = variance.sqrt()
+    std = torch.where(std > 1.0e-12, std, torch.ones_like(std))
+    return {"mean": mean.tolist(), "std": std.tolist(), "count": int(count)}
 
 
 def bilinear_map_path(maps, pair):
@@ -172,6 +228,8 @@ def build_bilinear_pair(
     bilinear_reference_fraction=0.0,
     quadrature_resolution=8,
     smoother_neighbors=9,
+    geometry_layout="intrinsic_v1",
+    gradient_layout="scalar_v1",
     device="cpu",
 ):
     source, target, edge, xyz_src, xyz_tgt, area_src, area_tgt = _edge_geometry(
@@ -187,18 +245,21 @@ def build_bilinear_pair(
         target_index, len(area_tgt),
     ).clamp_min(1.0)
     uniform_reference = 1.0 / degree[target_index]
-    if correction_reference_kind == "uniform":
-        reference = uniform_reference
-    elif correction_reference_kind == "blended_bilinear":
-        fraction = float(bilinear_reference_fraction)
-        if not 0.0 <= fraction <= 1.0:
-            raise ValueError("bilinear reference fraction must be in [0,1]")
+    if geometry_layout not in {"intrinsic_v1", "bilinear_v2"}:
+        raise ValueError(f"unknown geometry layout {geometry_layout!r}")
+    if gradient_layout not in {"scalar_v1", "covariance_v2"}:
+        raise ValueError(f"unknown gradient layout {gradient_layout!r}")
+    needs_bilinear_edges = (
+        correction_reference_kind == "blended_bilinear"
+        or geometry_layout == "bilinear_v2"
+    )
+    bilinear_reference = torch.zeros_like(uniform_reference)
+    bilinear_membership = torch.zeros_like(uniform_reference, dtype=torch.bool)
+    if needs_bilinear_edges:
         if bool((baseline.weight < 0).any()):
-            raise ValueError("bilinear-aware reference requires nonnegative weights")
+            raise ValueError("bilinear-aware features require nonnegative weights")
         correction_key = target_index * baseline.n_src + source_index
-        baseline_key = (
-            baseline.tgt_index * baseline.n_src + baseline.src_index
-        )
+        baseline_key = baseline.tgt_index * baseline.n_src + baseline.src_index
         order = torch.argsort(correction_key)
         locations = torch.searchsorted(correction_key[order], baseline_key)
         if bool((locations >= correction_key.numel()).any()) or not torch.equal(
@@ -207,8 +268,15 @@ def build_bilinear_pair(
             raise ValueError(
                 f"{map_path}: bilinear stencil is not contained in correction graph"
             )
-        bilinear_reference = torch.zeros_like(uniform_reference)
-        bilinear_reference[order[locations]] = baseline.weight
+        matched = order[locations]
+        bilinear_reference[matched] = baseline.weight
+        bilinear_membership[matched] = True
+    if correction_reference_kind == "uniform":
+        reference = uniform_reference
+    elif correction_reference_kind == "blended_bilinear":
+        fraction = float(bilinear_reference_fraction)
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("bilinear reference fraction must be in [0,1]")
         reference = (
             (1.0 - fraction) * uniform_reference
             + fraction * bilinear_reference
@@ -241,7 +309,7 @@ def build_bilinear_pair(
     )
     src_neighbors, src_weights = build_smoother(xyz_src, smoother_neighbors)
     tgt_neighbors, tgt_weights = build_smoother(xyz_tgt, smoother_neighbors)
-    return PairData(
+    pair = PairData(
         pair=str(pair_name),
         edge_features=torch.tensor(edge, dtype=torch.float32, device=device),
         src_xyz=torch.tensor(xyz_src, dtype=torch.float32, device=device),
@@ -263,3 +331,17 @@ def build_bilinear_pair(
             "panel_quadrature_resolution": int(quadrature_resolution),
         },
     )
+    if geometry_layout == "bilinear_v2" or gradient_layout == "covariance_v2":
+        enhanced, gradient = enhanced_geometry_features(
+            pair, bilinear_reference, bilinear_membership, reference
+        )
+        pair = replace(
+            pair,
+            correction_geometry=(
+                enhanced if geometry_layout == "bilinear_v2" else None
+            ),
+            gradient_coefficient=(
+                gradient if gradient_layout == "covariance_v2" else None
+            ),
+        )
+    return pair

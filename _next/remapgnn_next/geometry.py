@@ -250,3 +250,116 @@ def intrinsic_geometry_features(pair, reference, epsilon=1.0e-8):
         ),
         dim=1,
     )
+
+
+ENHANCED_GEOMETRY_FEATURES = (
+    "log_radius",
+    "log_source_target_area_ratio",
+    "bilinear_weight",
+    "bilinear_membership",
+    "correction_reference",
+    "log_source_candidate_degree",
+    "log_target_candidate_degree",
+    "first_moment_edge_alignment",
+    "first_moment_norm",
+    "second_moment_edge_alignment",
+    "stencil_anisotropy",
+    "log_covariance_major",
+    "log_covariance_minor",
+    "covariance_reliability",
+)
+
+TRANSFER_GEOMETRY_FEATURES = tuple(
+    name for name in ENHANCED_GEOMETRY_FEATURES
+    if name not in {
+        "log_source_candidate_degree",
+        "log_target_candidate_degree",
+    }
+)
+
+
+def enhanced_geometry_features(
+    pair, bilinear_weight, bilinear_membership, reference, epsilon=1.0e-8
+):
+    """Compact bilinear-aware geometry and a covariance gradient operator.
+
+    The returned static features contain one distance descriptor (rather than
+    both radius and radius squared), explicit baseline-stencil information,
+    graph degrees, normalized areas, and stencil-shape information.  The
+    gradient coefficient implements a spectrally regularized tangent-plane
+    covariance solve and is reused for every field on the pair.
+    """
+    source_index, target_index = pair.src_index, pair.tgt_index
+    dtype = pair.edge_features.dtype
+    source = pair.src_xyz[source_index].to(torch.float64)
+    target = pair.tgt_xyz[target_index].to(torch.float64)
+    area_src = pair.area_src.to(torch.float64)
+    area_tgt = pair.area_tgt.to(torch.float64)
+    reference64 = reference.to(torch.float64)
+    tangent = source - (source * target).sum(dim=1, keepdim=True) * target
+    target_h = area_tgt[target_index].clamp_min(1.0e-30).sqrt()
+    tangent_scaled = tangent / target_h.view(-1, 1)
+    radius = tangent_scaled.norm(dim=1)
+
+    first = tangent_scaled.new_zeros((pair.n_tgt, 3))
+    first.index_add_(0, target_index, reference64.view(-1, 1) * tangent_scaled)
+    centered_tangent = tangent_scaled - first[target_index]
+    outer = centered_tangent[:, :, None] * centered_tangent[:, None, :]
+    covariance = tangent_scaled.new_zeros((pair.n_tgt, 3, 3))
+    covariance.index_add_(
+        0, target_index, reference64.view(-1, 1, 1) * outer
+    )
+    eigenvalues = torch.linalg.eigvalsh(covariance).clamp_min(0.0)
+    minor = eigenvalues[:, 1]
+    major = eigenvalues[:, 2]
+    reliability = minor / major.clamp_min(float(epsilon))
+    trace = covariance.diagonal(dim1=1, dim2=2).sum(1).clamp_min(float(epsilon))
+    frobenius = covariance.square().sum(dim=(1, 2))
+    anisotropy = (2.0 * frobenius / trace.square() - 1.0).clamp(0.0, 1.0)
+    first_dot = (tangent_scaled * first[target_index]).sum(1)
+    second_edge = torch.einsum(
+        "ei,eij,ej->e",
+        tangent_scaled, covariance[target_index], tangent_scaled,
+    )
+
+    source_degree = index_sum(
+        torch.ones_like(reference64), source_index, pair.n_src
+    )
+    target_degree = index_sum(
+        torch.ones_like(reference64), target_index, pair.n_tgt
+    )
+    radius_squared = radius.square().clamp_min(float(epsilon))
+    features = torch.stack(
+        (
+            torch.log1p(radius),
+            torch.log(
+                (area_src[source_index] / area_tgt[target_index])
+                .clamp_min(1.0e-30)
+            ),
+            bilinear_weight.to(torch.float64),
+            bilinear_membership.to(torch.float64),
+            reference64,
+            torch.log1p(source_degree[source_index]),
+            torch.log1p(target_degree[target_index]),
+            first_dot / trace.sqrt()[target_index],
+            first.norm(dim=1)[target_index] / trace.sqrt()[target_index],
+            second_edge / (radius_squared * trace[target_index]),
+            anisotropy[target_index],
+            torch.log(major[target_index] + float(epsilon)),
+            torch.log(minor[target_index] + float(epsilon)),
+            reliability[target_index],
+        ),
+        dim=1,
+    ).to(dtype)
+
+    # The radial null direction is discarded by the pseudo-inverse.  Multiplying
+    # by the reference here makes gradient = sum(centered * coefficient).
+    inverse = torch.linalg.pinv(covariance, rtol=1.0e-5, hermitian=True)
+    coefficient = reference64.view(-1, 1) * torch.einsum(
+        "eij,ej->ei", inverse[target_index], centered_tangent
+    )
+    if not bool(torch.isfinite(features).all()) or not bool(
+        torch.isfinite(coefficient).all()
+    ):
+        raise RuntimeError("enhanced pair geometry is non-finite")
+    return features, coefficient.to(dtype)
